@@ -32,6 +32,17 @@ inline Choice choose(const char* env, bool native_mesh, bool marker, bool compre
 constexpr double kWorstMs = 100.0, kTotalMs = 500.0;
 inline bool too_slow(double worst_ms, double total_ms) { return worst_ms > kWorstMs || total_ms > kTotalMs; }
 
+/// The other thing loads at create calls must not do: find that the caches lack what a list names. A load asks the caches for
+/// its program's noted pipelines and its compute pipelines without compiling; one that is in no cache is compiled when it is
+/// first drawn, in play, with the draw left out: that is this mode's doing, and what start mode builds before the title.
+/// Measured: 0 in every tour where the caches held the preparation's work (at most 39 on a GPU without mesh shaders); 4,189
+/// and 5,384 in the two sessions of a folder whose caches did not answer.
+/// Not counted: draws left out and waits for pipelines no list names (a state first seen in play, a new game's opening:
+/// 1,906 left out and 353 ms of waits in eight minutes of a healthy session). Those happen the same in start mode, so they
+/// say nothing about this one, and a longer session would have taken a healthy install back to start by them
+constexpr long long kNotInCacheMost = 500;
+inline bool caches_lacked(long long listed_not_in_a_cache) { return listed_not_in_a_cache > kNotInCacheMost; }
+
 /// The marker a session that was too slow leaves for the next start (a preparation removes the file)
 inline bool marker_there(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -45,6 +56,15 @@ inline bool marker_write(const std::string& path, double worst_ms, double total_
     const bool ok = std::fprintf(f, "First uses of shader programs waited for their loads for %.0f ms in one session (the longest "
                                     "%.0f ms), so programs are loaded before the title again. Delete this file, or prepare the "
                                     "shaders again, to have them loaded when the game makes them.\n", total_ms, worst_ms) > 0;
+    return std::fclose(f) == 0 && ok;
+}
+inline bool marker_write_lacked(const std::string& path, long long listed_not_in_a_cache) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fprintf(f, "In one session %lld listed pipelines were in no cache when their programs were loaded, and "
+                                    "had to be compiled in play, so programs are loaded before the title again. Delete this "
+                                    "file, or prepare the shaders again, to have them loaded when the game makes them.\n",
+                                 listed_not_in_a_cache) > 0;
     return std::fclose(f) == 0 && ok;
 }
 

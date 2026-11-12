@@ -28,6 +28,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_antilag.h"
 #include "vk_progress.h"
 #include "vk_programs.h"
+#include "mesh_mode.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -262,35 +263,35 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
-    // (the Graphics tab's Mesh shaders row, mesh_shaders= in hookshot_options.ini, #1001: 0 Automatic (native where there are mesh
-    // shaders, the compute fallback where not and for the task + mesh draws of the cards below), 1 Native (no fallback where
-    // there are mesh shaders), 2 Compute (the fallback on every GPU). RX_VK_FORCE_MESH_FALLBACK=1, a test, is Compute over it:
-    // mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000 cards run (issue 640) can be tried
-    // on any GPU)
-    static const int mesh_mode = [] {
+    // (#1001: how task and mesh programs run, mesh_mode.h: RX_VK_MESH_SHADERS=native or compute, a launch switch; unset,
+    // Automatic. RX_VK_FORCE_MESH_FALLBACK=1, a test, is Compute over it: mesh shaders not used where they are, so the no-mesh
+    // fallback the GTX 10xx and RX 5000 cards run (issue 640) can be tried on any GPU. The Graphics tab's row it was, and its
+    // mesh_shaders= in hookshot_options.ini, no longer choose: the line is only told of in the log)
+    static const mesh_rule::Choice mesh_choice = [] {
         char exe[MAX_PATH];
         const DWORD len = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
         std::string ini(exe, len);
         ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
-        int v = 0;
         if (FILE* fl = fopen(ini.c_str(), "r")) {
             char line[80];
+            int old = 0;
             while (fgets(line, sizeof line, fl))
-                if (!strncmp(line, "mesh_shaders=", 13)) {
-                    v = atoi(line + 13);
+                if (mesh_rule::old_ini_choice(line, &old)) {
+                    logf("vk: mesh_shaders=%d in hookshot_options.ini is no longer read (the Mesh shaders row left the menu): "
+                         "set RX_VK_MESH_SHADERS=native or compute in hookshot_env.txt to choose", old);
                     break;
                 }
             fclose(fl);
         }
-        if (const char* e = getenv("RX_VK_FORCE_MESH_FALLBACK")) v = atoi(e) != 0 ? 2 : v;
-        return v >= 0 && v <= 2 ? v : 0;
+        return mesh_rule::choose(getenv("RX_VK_MESH_SHADERS"), getenv("RX_VK_FORCE_MESH_FALLBACK"));
     }();
+    const int mesh_mode = mesh_choice.mode;
     // (hookshot, issue 2245) RADV's native task/mesh path deadlocks the GPU: the gfx ring and RADV's gang compute ring
     // end up waiting on each other, and a mesh-only draw hangs with the compute queue empty (devcoredumps on an
     // RX 6800: no VM fault; waves stuck on gfx in the second). Task + mesh draws alone on the fallback still crash, so
     // only full Compute is stable there, and the reports span Navi 2x (RX 6800, RX 6600 XT) and the RDNA3 APUs (Steam
     // Deck OLED, Rog Xbox Ally X). On Linux, where AMD's Vulkan driver is RADV, Automatic picks Compute; Native stays
-    // a choice in the row. RDNA1 and older have no mesh shaders on RADV: for them a no-op.
+    // a choice (RX_VK_MESH_SHADERS=native). RDNA1 and older have no mesh shaders on RADV: for them a no-op.
     int mesh_mode_used = mesh_mode;
 #ifndef _WIN32
     if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;   // (Linux AMD is RADV)
@@ -605,8 +606,8 @@ bool create_device() {
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
     dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !env_on("RX_VK_NO_MESH_FALLBACK");
     if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
-    logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
-         dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
+    logf("vk: mesh shaders: %s, from %s: %s", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
+         mesh_choice.why, dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
                          : dev.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)

@@ -424,6 +424,17 @@ void module_ids_on() {
     if (!off) ids_on.store(true, std::memory_order_release);
 }
 
+void programs_frames_note() {
+    if (!programs_load_at_create()) return;
+    // (what the loads at create calls asked of the caches and no cache had: load_work counts them)
+    const long long lacked = census.load_pipes_cold.load(std::memory_order_relaxed) + census.load_computes_cold.load(std::memory_order_relaxed);
+    if (!load_default::caches_lacked(lacked) || wait_marked.exchange(true)) return;
+    const bool wrote = load_default::marker_write_lacked(load_fallback_path(), lacked);
+    logf("vk: %lld listed pipelines were in no cache when their programs were loaded in this session (over %lld): they are "
+         "compiled in play, so the next start loads every listed program before the title again%s", lacked,
+         load_default::kNotInCacheMost, wrote ? " (hookshot_load_start.txt)" : "; the marker did not write");
+}
+
 void programs_load_wait(uint64_t key) {
     if (!jobs_in_flight.load(std::memory_order_acquire)) return;
     std::shared_ptr<LoadJob> job;

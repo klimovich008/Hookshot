@@ -49,6 +49,12 @@ int main() {
     bounded(2000, 6);
     bounded(300, 0);   // (no thread count: one)
     stopped();
+    // the marker: only a warm that got to its end in a process that plays; never the preparation's own process
+    expect(warm_bounded::leaves_marker(false, true, false), "warm_bounded::leaves_marker(false, true, false)");
+    expect(!warm_bounded::leaves_marker(true, true, false), "!warm_bounded::leaves_marker(true, true, false)");    // (--prepare-shaders: its cache does not answer the game's asks)
+    expect(!warm_bounded::leaves_marker(false, false, false), "!warm_bounded::leaves_marker(false, false, false)");  // (not through)
+    expect(!warm_bounded::leaves_marker(false, true, true), "!warm_bounded::leaves_marker(false, true, true)");    // (the window was closed)
+    expect(!warm_bounded::leaves_marker(true, false, true), "!warm_bounded::leaves_marker(true, false, true)");
     if (failures) return std::printf("%d checks failed\n", failures), 1;
     std::printf("warm_bounded: ok\n");
     return 0;

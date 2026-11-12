@@ -42,4 +42,12 @@ size_t run(size_t n, unsigned threads, Work&& work, Stop&& stop, Tick&& tick) {
     return done.load();
 }
 
+
+/// Whether a warm may leave the marker that says every noted pipeline is in the pipeline cache (hookshot_pipelines.bin.built),
+/// after which a start loads at create calls and builds nothing itself. Only a warm that got to its end, and only in a process
+/// that plays: on NVIDIA the cache a --prepare-shaders process writes does not answer the asks of the play process that
+/// follows (0 of 32 of a sample; 3,720 of 3,880 pipelines "in no cache" in the first session, compiled in play with draws left
+/// out), while what a play process builds is answered from then on. So the preparation's process never leaves the marker,
+/// and the first start of the game after it warms again, itself
+inline bool leaves_marker(bool prepare_only, bool got_to_the_end, bool stopped) { return !prepare_only && got_to_the_end && !stopped; }
 } // namespace warm_bounded
