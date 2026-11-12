@@ -2367,7 +2367,8 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     if (!p.mesh) {
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE);
-        dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+        // The fallback vertex stage reads records by vertex index, with no vertex buffers bound.
+        if (!p.fallback) dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
     }
     if (dev.eds3_blend) {
         dyn.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
@@ -7074,6 +7075,12 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_BINDPL);
         FINE_N(FC_BIND_PIPE, 1);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
+        if (p.fallback) {
+            // A static-stride pipeline invalidates the dynamic strides, even with no vertex bindings.
+            // Drop both bind-skip caches; the resolved buffer references themselves are still reusable.
+            last_vb_valid = false;
+            vertex_set.on = false;
+        }
     }
     if (!same_desc) {
         FINE_SCOPE(FT_BINDDESC);
