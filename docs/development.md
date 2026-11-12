@@ -297,6 +297,14 @@ what you test.
 **Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
 and no release or player build. Build those with the defaults.
 
+## Draw statistics
+
+Set `RX_VK_DRAW_STATS=<directory>` and create `<directory>/draw_stats.now` during play to measure one future frame.
+The report keeps its per-program counts and adds `code` rows with the native stage keys copied when each query was
+recorded, including programs loaded from the cache. The four keys are vertex/mesh/compute, fragment, task and the
+header-only stage; zero means no key was available. Distinct tuples for the same program stay separate. These are
+recorded-query identities, not a complete draw replay or display timestamps. The queries can perturb frame timing.
+
 ## The pipeline state list
 
 Every release ships a list of pipelines, merged from the sources in `assets/pipeline_states/`:
