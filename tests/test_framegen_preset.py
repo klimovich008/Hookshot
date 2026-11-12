@@ -52,6 +52,8 @@ int saves = 0;
 void save() { ++saves; }
 void apply_pad_layout(int) {}
 void sync_preset_budgets(int) {}
+constexpr int kAutoPreset = 6;   /* (the Quality preset Auto (this PC): apply_auto, not reached here) */
+void apply_auto(bool) {}
 void env_release(const int*) {}   // (the environment's hold on a row: none here)
 void vram_budget_sync() {}
 constexpr int kVramMinimumOnly = 1;
@@ -71,6 +73,8 @@ int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}
 int step_output_choice(int id, int dir) { return id + dir; }
+// (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
+int output_for_aspect(int) { return opts.output_res; }
 const char* tx_framegen(int) { return ""; }
 const char* hn_framegen(int, int) { return ""; }
 const char* tx_preset(int) { return ""; }
