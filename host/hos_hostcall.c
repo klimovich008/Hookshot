@@ -107,16 +107,17 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     return 1;
 }
 
-/* HOS_HLE_STATS=1 (off by default): every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in that
-   time, the most called first: "hle: <total> calls of <n> functions in 5 s", then lines of "<count> <name>;" (HLE functions
-   by their full mangled name). scripts/cpu_report.py --calls reads them. HLE functions called from host
+/* HOS_HLE_STATS=1 (off by default): about every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in
+   the measured clock span, most called first: "hle: <total> calls of <n> functions in <elapsed> s", then "<count> <name>;"
+   (HLE functions by their full mangled name). scripts/cpu_report.py --calls reads them. HLE functions called from host
    code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
 int hos_hle_stats;
 static HleCount *volatile hos_hle_list;
+static int64_t hos_hle_before_ns;
 void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) {
-    if (!h->listed && !InterlockedExchange(&h->listed, 1)) {   /* (its first call puts it on the list, once) */
+    if (!__atomic_load_n(&h->listed, __ATOMIC_ACQUIRE) && !InterlockedExchange(&h->listed, 1)) {
         HleCount *head;
-        do h->next = head = hos_hle_list;
+        do h->next = head = __atomic_load_n(&hos_hle_list, __ATOMIC_ACQUIRE);
         while (InterlockedCompareExchangePointer((PVOID volatile *)&hos_hle_list, h, head) != head);
     }
     InterlockedIncrement(&h->calls);
@@ -130,26 +131,33 @@ static int hos_hle_row_cmp(const void *a, const void *b) {
     return (x < y) - (x > y);
 }
 static void hos_hle_report(void) {
+    if (!hos_hle_stats) return;
+    const int64_t end_ns = hos_now_ns(), begin_ns = hos_hle_before_ns;
+    if (end_ns <= begin_ns) return;
+    hos_hle_before_ns = end_ns;
     enum { TOP = HOS_HOSTCALL_MAX + 2048 };
     static HleRow row[TOP];
     int n = 0;
     unsigned long long total = 0;
-    for (HleCount *h = hos_hle_list; h && n < TOP; h = h->next) {
-        const long now = h->calls;
+    for (HleCount *h = __atomic_load_n(&hos_hle_list, __ATOMIC_ACQUIRE); h && n < TOP; h = h->next) {
+        const long now = __atomic_load_n(&h->calls, __ATOMIC_RELAXED);
         const unsigned long d = (unsigned long)now - (unsigned long)h->before;
         h->before = now;
         if (d) row[n].name = h->name, row[n].n = d, n++, total += d;
     }
+    AcquireSRWLockExclusive(&lock);   /* (the table's names are published under this lock) */
     const LONG nc = ncalls;
     for (LONG i = 0; i < nc && n < TOP; i++) {
-        const LONG now = calls[i].calls;
+        const LONG now = __atomic_load_n(&calls[i].calls, __ATOMIC_RELAXED);
         const unsigned long d = (ULONG)now - (ULONG)calls[i].before;
         calls[i].before = now;
         if (d) row[n].name = calls[i].name, row[n].n = d, n++, total += d;
     }
+    ReleaseSRWLockExclusive(&lock);
     qsort(row, n, sizeof *row, hos_hle_row_cmp);
     /* (every row is printed: a row left out would lose its counts for good, as its baseline moved on) */
-    hos_log("hle: %llu calls of %d functions in 5 s", total, n);
+    hos_log("hle: %llu calls of %d functions in %.9f s; begin_ns=%lld end_ns=%lld", total, n,
+            (double)(end_ns - begin_ns) / 1e9, (long long)begin_ns, (long long)end_ns);
     for (int i = 0; i < n; i++) {
         hos_log("hle: %lu %s;", row[i].n, row[i].name);
     }
@@ -164,8 +172,11 @@ static DWORD WINAPI hos_hle_thread(void *p) {
 }
 /* hos_main.c, before the game starts: counting and the 5 s log from here on */
 void hos_hle_stats_start(void) {
-    hos_hle_stats = 1;
-    CreateThread(NULL, 0, hos_hle_thread, NULL, 0, NULL);
+    hos_hle_before_ns = hos_now_ns();
+    hos_hle_stats = 1;   /* (published to the report thread at creation; the game starts after this function) */
+    HANDLE thread = CreateThread(NULL, 0, hos_hle_thread, NULL, 0, NULL);
+    if (!thread) { hos_hle_stats = 0; hos_log("hle: call counters could not start; counting stays off"); return; }
+    CloseHandle(thread);
 }
 
 /* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest
