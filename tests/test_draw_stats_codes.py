@@ -20,6 +20,7 @@ def block(text, marker):
 
 
 FIXTURE = r'''
+#define _CRT_SECURE_NO_WARNINGS
 #include <algorithm>
 #include <array>
 #include <atomic>
