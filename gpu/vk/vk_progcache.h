@@ -60,6 +60,11 @@ struct Reader {
 void disk_init();
 void get_head(Reader& r, Program& p);
 void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t>>& spirv);
+/// The payload of a record: the stored bytes the file has at d.at (d.size of them), unpacked when the kind says it is
+/// compressed (RX_VK_PROGRAM_CACHE_ZSTD). On true, payload/payload_size are the program's bytes (plain, when it was
+/// compressed); false when the record is not whole or the frame does not unpack.
+bool program_cache_payload(const uint8_t* stored, size_t stored_size, uint32_t kind, std::vector<uint8_t>& plain,
+                           const uint8_t** payload, size_t* payload_size);
 /// (shader_mu held) the kept variants of key go to its list, ready, once (keep: borrowed, still on disk for play)
 void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& variants, bool keep = false);
 

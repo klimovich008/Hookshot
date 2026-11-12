@@ -363,7 +363,8 @@ void release() {
     s.context.reset();
 }
 
-int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, uint32_t* in_w, uint32_t* in_h, const char** why) {
+int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool /*native_aa*/,
+            uint32_t* in_w, uint32_t* in_h, const char** why) {
     State& s = st();
     int made = 1;
     // (the game's native HDR: Context::hdr. What the game presents, not the option and the swapchain: with Native picked and

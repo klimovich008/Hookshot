@@ -337,6 +337,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | V-Sync | Auto, On, Off | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Aspect ratio | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Monitor's shape |
+| | Ultrawide menus | Full width; Centred, blurred sides; Centred, black bars (with the Aspect ratio at the monitor's shape) | Centred, blurred sides |
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
@@ -345,6 +346,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
+| | Mesh shaders | Automatic, Native, Compute (after a restart) | Automatic |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
@@ -358,6 +360,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
+| | Discord status | Off, On ("Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC) | On |
 | | Bug report | Saves a report into a new folder in `bug-reports` (below) | |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
@@ -369,10 +372,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Camera speed | 50% to 400%, in steps of 25 | 100% |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
-| | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
+| | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
+| | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
+| | Compact menu key | Right Shift, Right Ctrl | Right Shift |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
 | | Developer: Descriptor reuse | Off, On (after a restart) | On |
 | | Developer: Sampler cache | Off, On (after a restart) | Off |
@@ -463,8 +468,16 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   0 for none, down to -3).
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
-- **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
+- **AMD Anti-Lag 2** Off is the game as without it. It works with Frame generation too: each game frame's present
+  stage is given when that frame itself is shown, not at the made frames before it.
 - **Profile** runs the game as the console docked (at the Output resolution) or Handheld (1536x864): lighter on the GPU.
+- **Mesh shaders** is how the game's mesh programs (much of the scenery) run. Automatic uses the GPU's own mesh shaders
+  where it has them and the compute path where it has not. Native uses the GPU's own for every draw (a GPU without them
+  still gets the compute path). Compute uses the compute path on every GPU: try it if your card crashes or leaves objects
+  out; it is usually a little slower (`mesh_shaders=` in `hookshot_options.ini`, 0 to 2 in that order).
+- **Ultrawide menus:** with the Aspect ratio at the monitor's shape, the pause, item and map menus stay in the middle
+  16:9, with what the game draws beside them out of focus, or black; Full width stretches them over the whole screen,
+  as before. Loading screens and pre-rendered movies get the same sides. It changes at once.
 - **V-Sync:** Auto is mailbox where the driver has it (no tearing, no wait for the display); otherwise On, or on Windows
   Off. On waits for each refresh (FIFO): no tearing, at most the display's rate. Off shows each frame at once and can
   tear (where the driver cannot, it is Auto). It changes at once. `RX_VK_FIFO=1` (On) or `RX_VK_IMMEDIATE=1` (Off) chooses
@@ -507,6 +520,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   one line in `gpu/vk/menu_i18n.h`. Place and item names stay English for now. Japanese, Chinese and Korean letters come
   from the game's own fonts for them, with Windows' (Yu Gothic, Microsoft YaHei, Microsoft JhengHei, Malgun Gothic) or
   Linux's Noto CJK where a game font lacks one.
+- **Discord status** shows "Playing Hookshot" and the time played in your Discord status. It is on by default and does
+  nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
@@ -613,6 +628,8 @@ each grow files need one table with all their entries, in the mod that sorts las
 entries into that table (each file gets the larger of the two), so your controller's icons stay in texts; the log says
 `(with the button prompts' sizes merged in)` after the table's line. A table it cannot read that way (not the game's
 format, or a zstd frame that does not give its size) is used as it is, with the Switch's icons.
+If a mod includes tables for several game versions, the prompts use the table name from the game's own RomFS,
+not the first table found in the mod. Other versions' tables do not change the prompts' font or its size entries.
 
 ## Build from source
 
@@ -910,11 +927,24 @@ are missing while it is set. Off unless set.
 The switches for scripted test runs, screenshots, frame dumps and profiles are in the
 [development guide](docs/development.md#switches-for-testing-and-debugging).
 
-`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
-lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
-memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
-`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
-same scene to 59-60 fps. `0` or unset copies every written binding, as before.
+`RX_VK_WB_MAX_KB=<KB>` (off by default; 1024 is the tested value) is the size from which a written GPU binding may go
+without most of its write-back. OoT
+writes tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads, and copying them back
+sat on every submit's memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the
+scene at 45-48 fps. The CPU does read and write parts of some large ones, so a binding over the size is written back
+whole for the first `RX_VK_WB_PROBATION` submissions that write it (default 8), and after that only the ranges the CPU
+read or wrote meanwhile, and its first and last page when it shares them, are written back (`gpu/vk/wb_learn.h`). The
+trade-off: a range the CPU first touches only after that (read more rarely than every 8 frames) gets the stale copy
+once, and is written back from then on; the log names each one (`in a binding whose write-back was left out`).
+Unset or `0`, every written binding is copied back whole. It is off by default because, measured so far (an RTX 3060 Ti
+on Windows, an RX 580 on Linux with its mirror forced on), it copies back ~50 MB a frame less at the same frame rate:
+results from laptops and other slow PCIe links are wanted. `RX_VK_LOG_WB_SKIPS=1` lists the bindings left out every
+600 submits.
+
+`RX_VK_PROGRAM_CACHE_ZSTD=1` keeps the translated shader programs in `hookshot_programs.zst.bin`, each record
+compressed with zstd and unpacked when it is read. The uncompressed cache is about 6.9 GB; in the reference cache
+(46,587 programs) zstd's level 3 made it 1.83 GB (3.75x). It is a file of its own: an existing
+`hookshot_programs.bin` is left alone, and the first run translates the programs into the compressed cache.
 
 </details>
 

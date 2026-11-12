@@ -275,6 +275,8 @@ def post(args):
     alias = args.room or config.get("room", ROOM)
     text = args.text if args.text is not None else sys.stdin.read()
     text = text.strip()
+    while text.startswith(PREFIX.strip()):  # the robot is added below; one written by the agent would show twice
+        text = text[len(PREFIX.strip()):].lstrip()
     if not text:
         raise ChatError("nothing to post")
     now = time.time()
