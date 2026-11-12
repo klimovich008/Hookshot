@@ -168,6 +168,9 @@ VkResult fake_create(VkPipelineCache c, const FakeCI* ci, VkPipeline* pl) {
 }
 
 #define MoveFileExA move_into_place
+// (the census's counters, gpu/vk/vk_programs.h: counted, not checked here)
+struct { std::atomic<int64_t> play_from_driver{0}, play_from_start{0}, play_compiled{0}; } census;
+thread_local struct { uint8_t made_how = 0; } use_counters;
 #include "pipeline_play_cache.inc"
 #undef MoveFileExA
 

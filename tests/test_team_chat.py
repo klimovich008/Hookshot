@@ -1,9 +1,9 @@
 """scripts/team_chat.py, game-free and offline: against a stand-in Matrix homeserver on 127.0.0.1, single sign-on comes
 back to the one-time listener (keeping the token when the browser closes the tab first) and the session is saved
-readable by the user only; the room is joined once; a post
-carries the robot prefix; a second post within the minimum interval and the same text twice are refused with exit
-code 3 (--force skips the interval, never the repeat); read prints the room oldest first; a revoked session asks for
-a new login; logout forgets the token.
+readable by the user only; the room is joined once; a post carries the robot prefix once (also when the text starts
+with one); a second post within the minimum interval and the same text twice are refused with exit code 3 (--force
+skips the interval, never the repeat); read prints the room oldest first; a revoked session asks for a new login;
+logout forgets the token.
 
     python -I -B tests/test_team_chat.py
 """
@@ -184,8 +184,8 @@ def main():
 
                 now[0] += 61 * 60
                 assert "would go out" in run(chat, "status")[1]
-                code, _, _ = run(chat, "post", "PR #124 merged")
-                assert code == 0 and len(home.messages) == 3
+                code, _, _ = run(chat, "post", "\N{ROBOT FACE} \N{ROBOT FACE}PR #124 merged")
+                assert code == 0 and home.messages[2] == "\N{ROBOT FACE} PR #124 merged", "one robot, however many sent"
 
                 saved = json.load(open(path, encoding="utf-8"))
                 saved["min_interval_minutes"] = 120

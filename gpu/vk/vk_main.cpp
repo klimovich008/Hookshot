@@ -27,6 +27,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "vk_progress.h"
+#include "vk_programs.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -241,6 +242,16 @@ bool pick_device() {
     return true;
 }
 
+/// (hookshot) Whether the shaders' float adds to storage buffers are asked to be the GPU's own atomic (create_device):
+/// RX_VK_NATIVE_FADD by the switches' rule (hookshot_env.h env_value_off: 0, false, off, no or empty is off, any other
+/// value on); unset, only with NVIDIA's driver, the one the native add was tried on in the game (an RTX 4090 in Kakariko
+/// and on Death Mountain Trail). AMD's RDNA 3 and later and Intel's Arc report the feature too but were not tried: they
+/// keep the loop unless the switch asks, until runs on them say otherwise
+static bool native_fadd_wanted(const char* env, VkDriverId driver) {
+    if (env) return !env_value_off(env);
+    return driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+}
+
 bool create_device() {
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, nullptr);
@@ -290,6 +301,8 @@ bool create_device() {
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
     optional(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, dev.pipeline_library);
+    bool module_id = false;   // (not a field of dev: vk_state.h is part of the translator's stamp)
+    optional(VK_EXT_SHADER_MODULE_IDENTIFIER_EXTENSION_NAME, module_id);
     if (dev.pipeline_library) optional(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, dev.graphics_pipeline_library);
     optional(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, dev.custom_border_color);
     optional(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME, dev.dynamic_state3);
@@ -314,6 +327,20 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    // (hookshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
+    // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
+    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver only (native_fadd_wanted);
+    // RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop on every one, the extension not even enabled
+    const char* const fadd_env = getenv("RX_VK_NATIVE_FADD");
+    VkPhysicalDeviceDriverProperties fadd_driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    {
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &fadd_driver;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    }
+    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID);
+    bool atomic_float = false;
+    if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     dlss_fg_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS Frame Generation's through NGX, asked of NGX)
@@ -413,6 +440,10 @@ bool create_device() {
     VkPhysicalDeviceProvokingVertexFeaturesEXT pv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
     void** tail = &f13.pNext;
+    // (hookshot: the load at a program's create call makes a pipeline from the caches by its module's identifier, without the
+    // program's code: vk_programs.h. Nothing else uses it)
+    VkPhysicalDeviceShaderModuleIdentifierFeaturesEXT module_idf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MODULE_IDENTIFIER_FEATURES_EXT};
+    if (module_id) *tail = &module_idf, tail = &module_idf.pNext;
     if (dev.mesh_shader) *tail = &mesh, tail = &mesh.pNext;
     if (dev.null_descriptor) *tail = &robust2, tail = &robust2.pNext;
     if (dev.index_uint8) *tail = &u8, tail = &u8.pNext;
@@ -430,6 +461,8 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afloat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+    if (atomic_float) *tail = &afloat, tail = &afloat.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
@@ -441,11 +474,26 @@ bool create_device() {
     }
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    if (module_id && module_idf.shaderModuleIdentifier) module_ids_on();
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
+    {   // (only the float add on buffers on: the one the translator emits)
+        dev.float_atomic_add = atomic_float && afloat.shaderBufferFloat32AtomicAdd;
+        void* const next = afloat.pNext;
+        afloat = VkPhysicalDeviceShaderAtomicFloatFeaturesEXT{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        afloat.pNext = next;
+        afloat.shaderBufferFloat32AtomicAdd = dev.float_atomic_add ? VK_TRUE : VK_FALSE;
+        const char* const how = dev.float_atomic_add ? "native (VK_EXT_shader_atomic_float)"
+                                : !fadd_wanted       ? "compare-exchange loop"
+                                : atomic_float       ? "compare-exchange loop (no shaderBufferFloat32AtomicAdd)"
+                                                     : "compare-exchange loop (no VK_EXT_shader_atomic_float)";
+        if (fadd_env) logf("vk: float atomic add on storage buffers: %s, RX_VK_NATIVE_FADD=%s", how, fadd_env);
+        else logf("vk: float atomic add on storage buffers: %s, %s", how,
+                  fadd_wanted ? "NVIDIA's driver" : "by default only with NVIDIA's driver (RX_VK_NATIVE_FADD=1: native where the GPU has it)");
+    }
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
     // for single frames (the black flashes); with it, neither in A/B runs at the same GPU time. Lichii's OoT branch keeps it on too.
@@ -579,6 +627,9 @@ bool create_device() {
 
 
     load_device(dev.device);
+    // (hookshot: when programs are loaded, vk_programs.h. Without mesh shaders, or with the task + mesh draws through the
+    // fallback, a start keeps the fallback's programs ready, and loads at create have not been shown to be as good there)
+    programs_load_decide(dev.mesh_shader && !dev.mesh_fallback && !dev.task_mesh_fallback);
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
@@ -1431,6 +1482,9 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    programs_census_log("close");
+    module_ids_flush();
+    fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
         logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
