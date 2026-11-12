@@ -1903,7 +1903,8 @@ bool low_vram_texture_mips() {
         uint64_t used = 0, allowed = 0;
         return vram_usage(&used, &allowed) && allowed && allowed <= (4ull << 30) + (512ull << 20);
     }();
-    return !disabled && small && opts.preset == 1;
+    // (Minimum, or Auto (this PC) at Minimum's tier: its budgets, opts.budget 1)
+    return !disabled && small && (opts.preset == 1 || (opts.preset == kAutoPreset && opts.budget == 1));
 }
 
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {

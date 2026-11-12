@@ -4036,7 +4036,7 @@ void checkpoints_report() {
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints"
                                         : marker_words ? "the buffer markers"
                                                        : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
-    struct FaultLast { ~FaultLast() { if (env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+    struct FaultLast { ~FaultLast() { if ((!dev.checkpoints && !marker_words) || env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
     const auto watched = [] {
         std::lock_guard lk(watch_mu);
         for (int i = 0; i < 40; i++)
