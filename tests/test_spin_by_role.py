@@ -3,10 +3,12 @@
 host/hos_thread.c's hos_spin_ns gives the calling thread's spin (nn_os_sync.c's events, queues and mutexes, hos_svc.c's
 mutexes spin that long before they sleep): HOS_SPIN_US (20 us) on the frame's serial threads (the game thread, the
 Presentation Thread: hos_thread_serial, from the name the game gives them), HOS_SPIN_OTHER_US (5 us, never more than
-HOS_SPIN_US) on the others. HOS_SPIN_US=0: no spin; HOS_SPIN_OTHER_US=20: one spin for all, as before.
+HOS_SPIN_US) on the others where the process has more than 6 processors. With 6 or fewer, or not known, every thread
+keeps HOS_SPIN_US unless HOS_SPIN_OTHER_US is set. HOS_SPIN_US=0: no spin; HOS_SPIN_OTHER_US=20: one spin for all, as
+before.
 
-The fixture runs the real code cut from the source (the serial names, hos_spin_ns) over a stub thread, one process a case
-(the values are read once).
+The fixture runs the real code cut from the source (the serial names, hos_spin_ns) over a stub thread and a stub
+processor count (process_threads), one process a case (the values are read once).
 
 python -I -B tests/test_spin_by_role.py [--cc gcc]
 """
@@ -23,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NAMES = "static int serial_name(const char *name) {"
 SERIAL = "int hos_thread_serial(const HosThread *t) {"
 SPIN = "int64_t hos_spin_ns(void) {"
+LIMIT = "enum { SHORT_SLEEP_TIMER_THREADS = 6 };"
 
 
 def block(source, marker):
@@ -48,14 +51,18 @@ FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 typedef struct HosThread { int serial; } HosThread;
 static HosThread me;
 static HosThread *hos_self(void) { return &me; }
+static int threads;   /* (the processors: argv[3]) */
+static int process_threads(void) { return threads; }
+@LIMIT@
 
 @NAMES@
 @SERIAL@
 @SPIN@
 
 int main(int argc, char **argv) {
-    CHECK(argc == 3);
+    CHECK(argc == 4);
     const int64_t serial_ns = atoll(argv[1]), other_ns = atoll(argv[2]);
+    threads = atoi(argv[3]);
     /* (the names the game gives its serial threads, and some it gives others) */
     CHECK(serial_name("sead::MainThread") && serial_name("MainThread") && serial_name("Presentation Thread"));
     CHECK(!serial_name("ModuleSystemWorker1") && !serial_name("BaseProcExecutor0") && !serial_name("Presentation"));
@@ -70,10 +77,14 @@ int main(int argc, char **argv) {
 }
 '''
 
-# HOS_SPIN_US, HOS_SPIN_OTHER_US (None: not set), the serial threads' and the others' spin in ns
+# HOS_SPIN_US, HOS_SPIN_OTHER_US (None: not set), the serial threads' and the others' spin in ns (16 processors)
 CASES = [(None, None, 20000, 5000), ("0", None, 0, 0), (None, "20", 20000, 20000), ("3", None, 3000, 3000),
          (None, "50", 20000, 20000), ("40", None, 40000, 5000), ("40", "10", 40000, 10000), (None, "0", 20000, 0),
          (None, "-5", 20000, 0), ("0", "5", 0, 0), (None, "9223372036854776", 20000, 20000), ("9223372036854776", None, 1000000000, 5000)]
+# the processors: the short spin only above 6; 6 or fewer, or not known (0), one spin for all unless HOS_SPIN_OTHER_US is set
+THREAD_CASES = [(7, None, None, 20000, 5000), (6, None, None, 20000, 20000), (4, None, None, 20000, 20000),
+                (0, None, None, 20000, 20000), (6, "40", None, 40000, 40000), (6, "0", None, 0, 0),
+                (6, None, "5", 20000, 5000), (6, "-3", None, 0, 0), (4, "9223372036854776", None, 1000000000, 1000000000)]
 
 
 def main():
@@ -82,7 +93,9 @@ def main():
     a = p.parse_args()
 
     src = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
-    parts = {"@NAMES@": block(src, NAMES), "@SERIAL@": block(src, SERIAL), "@SPIN@": block(src, SPIN)}
+    check(LIMIT in src, "host/hos_thread.c no longer has '%s'" % LIMIT)
+    parts = {"@NAMES@": block(src, NAMES), "@SERIAL@": block(src, SERIAL), "@SPIN@": block(src, SPIN), "@LIMIT@": LIMIT}
+    check("const int threads = process_threads();" in src, "sleep_ns no longer counts the processors with process_threads")
     # (wired: a thread's flag follows its name, and every spin asks hos_spin_ns)
     check("__atomic_store_n(&t->serial, serial_name(t->name), __ATOMIC_RELAXED);" in src, "hos_thread_set_name no longer sets the thread's serial flag")
     sync = (ROOT / "host" / "nn_os_sync.c").read_text(encoding="utf-8")
@@ -103,13 +116,13 @@ def main():
                        check=True)
         return exe
 
-    def run(exe, spin, other, serial_ns, other_ns):
+    def run(exe, spin, other, serial_ns, other_ns, threads=16):
         e = dict(env)
         if spin is not None:
             e["HOS_SPIN_US"] = spin
         if other is not None:
             e["HOS_SPIN_OTHER_US"] = other
-        return subprocess.run([str(exe), str(serial_ns), str(other_ns)], env=e, capture_output=True, text=True)
+        return subprocess.run([str(exe), str(serial_ns), str(other_ns), str(threads)], env=e, capture_output=True, text=True)
 
     with tempfile.TemporaryDirectory(prefix="spin-role-") as tmp:
         exe = build(tmp, "fixture")
@@ -117,6 +130,10 @@ def main():
             r = run(exe, spin, other, serial_ns, other_ns)
             check(r.returncode == 0, "HOS_SPIN_US %r, HOS_SPIN_OTHER_US %r: not %d / %d ns\n%s"
                   % (spin, other, serial_ns, other_ns, r.stderr))
+        for threads, spin, other, serial_ns, other_ns in THREAD_CASES:
+            r = run(exe, spin, other, serial_ns, other_ns, threads)
+            check(r.returncode == 0, "%d processors, HOS_SPIN_US %r, HOS_SPIN_OTHER_US %r: not %d / %d ns\n%s"
+                  % (threads, spin, other, serial_ns, other_ns, r.stderr))
         r = run(exe, None, None, 20000, 20000)   # (the fixture tells the roles apart)
         check(r.returncode != 0 and "FAIL:" in r.stderr, "one spin for all passes as the default: the checks prove nothing")
 
@@ -132,6 +149,11 @@ def main():
         broken("no-off", "@SPIN@", "other < 0 ? 0 : ", "", (None, "-5", 20000, 0), "a negative spin passes")
         broken("presentation", "@NAMES@", '!strcmp(name, "Presentation Thread")', "0", (None, None, 20000, 5000),
                "the Presentation Thread not counted as a serial thread passes")
+        gate = "process_threads() > SHORT_SLEEP_TIMER_THREADS ? 5 : s"
+        broken("no-gate", "@SPIN@", gate, "5", (None, None, 20000, 20000, 6),
+               "the short spin on 6 processors passes")
+        broken("gate-at-6", "@SPIN@", gate, gate.replace(" > ", " >= "), (None, None, 20000, 20000, 6),
+               "the short spin from 6 processors on passes")
 
 
 if __name__ == "__main__":

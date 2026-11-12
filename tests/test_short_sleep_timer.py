@@ -27,7 +27,8 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
-CHOICE = "enum { SHORT_SLEEP_TIMER_THREADS"
+PROCS = "enum { SHORT_SLEEP_TIMER_THREADS = 6 };"   # (with process_threads: the processors, shared with hos_spin_ns)
+CHOICE = "static int hos_short_sleep_timer(const char *asked, int threads) {"
 AWAY = "static void sleep_away(int64_t ns, int guest) {"
 HOST = "void hos_sleep_ns(int64_t ns) { sleep_away(ns, 0); }\n"
 SLEEP = "static void sleep_ns(int64_t ns, int guest) {"
@@ -118,6 +119,7 @@ static int hos_vcore_away(void) { aways++; return 1; }
 static void hos_vcore_back(void) { backs++; }
 static void sleep_ns(int64_t ns, int guest);
 
+@PROCS@
 @CHOICE@
 @POLLERS@
 @AWAY@
@@ -216,7 +218,7 @@ def main():
     a = p.parse_args()
 
     src = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
-    parts = {"@CHOICE@": block(src, CHOICE), "@POLLERS@": block(src, POLLERS), "@AWAY@": block(src, AWAY), "@SLEEP@": block(src, SLEEP),
+    parts = {"@PROCS@": block(src, PROCS), "@CHOICE@": block(src, CHOICE), "@POLLERS@": block(src, POLLERS), "@AWAY@": block(src, AWAY), "@SLEEP@": block(src, SLEEP),
              "@GUEST@": block(src, GUEST)}
     check(HOST in src, "host/hos_thread.c has no '%s'" % HOST.strip())
     parts["@HOST@"] = HOST
@@ -287,7 +289,7 @@ def main():
                (4, None, 1), "the game's sleeps passed on as the host's pass on 4 threads")
         broken(tmp, "host-too", "@SLEEP@", "short_timer < (guest ? 1 : 2)", "!short_timer && (guest || 1)",
                (4, None, 1), "the host's own short sleeps on the timer pass on 4 threads")
-        broken(tmp, "one-group", "@SLEEP@", "GetActiveProcessorGroupCount() == 1 && ", "",
+        broken(tmp, "one-group", "@PROCS@", "GetActiveProcessorGroupCount() == 1 && ", "",
                (4, None, 0, 2), "one group's mask taken for the process's processors passes")
         broken(tmp, "no-limit", "@SLEEP@", "InterlockedIncrement(&short_pollers) <= poll_cap",
                "(InterlockedIncrement(&short_pollers), 1)",
@@ -297,7 +299,7 @@ def main():
         broken(tmp, "leak", "@SLEEP@", "if (counted) InterlockedDecrement(&short_pollers);", "",
                (16, None, 0), "a poller never counted out passes")
         edge = "enum { SHORT_SLEEP_TIMER_THREADS = 6 };"   # (the number the measurements gave: a change of it is a change here too)
-        check(edge in parts["@CHOICE@"], "SHORT_SLEEP_TIMER_THREADS is no longer 6: the cases above name 6 and 7 threads")
+        check(edge in parts["@PROCS@"], "SHORT_SLEEP_TIMER_THREADS is no longer 6: the cases above name 6 and 7 threads")
 
 
 if __name__ == "__main__":

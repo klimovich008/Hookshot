@@ -589,9 +589,26 @@ void hos_thread_destroy(HosThread *t) {
 static int serial_name(const char *name) { return strstr(name, "MainThread") || !strcmp(name, "Presentation Thread"); }
 int hos_thread_serial(const HosThread *t) { return t && __atomic_load_n(&t->serial, __ATOMIC_RELAXED); }
 
+/* The processors this process may run on (its affinity mask, as the game starts with it): Windows with one processor
+   group; 0 = not known (more than one group, or elsewhere). Up to SHORT_SLEEP_TIMER_THREADS of them, the host keeps the
+   behaviour measured best there (sleep_ns's timer, hos_spin_ns's one spin). */
+enum { SHORT_SLEEP_TIMER_THREADS = 6 };
+static int process_threads(void) {
+    int threads = 0;
+#if defined(_WIN32)   /* (measured on Windows only) */
+    /* (with more than one processor group the mask is one group's, not the process's: not known then) */
+    DWORD_PTR proc = 0, sys = 0;
+    if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
+        threads = __builtin_popcountll((uint64_t)proc);
+#endif
+    return threads;
+}
+
 /* How long a wait spins before it sleeps (nn_os_sync.c's events, queues and mutexes; hos_svc.c's mutexes), in ns, for the
    calling thread: HOS_SPIN_US (20 us) on the frame's serial threads, HOS_SPIN_OTHER_US (5 us, never more than HOS_SPIN_US)
-   on the others. A sleeper runs again 6.6-8.4 us after its signal (HOS_WAKE_LAT, Hyrule), so a spin much longer than that
+   on the others, where there are more than SHORT_SLEEP_TIMER_THREADS processors. With 6 or fewer (or not known), every
+   thread keeps HOS_SPIN_US unless HOS_SPIN_OTHER_US is set: there the short spin saved no CPU and cost 1.6 % fps (6 pairs,
+   Hyrule, 6 of 16 processors), as a 24-thread run with only 2 pollers did (1.7 %). A sleeper runs again 6.6-8.4 us after its signal (HOS_WAKE_LAT, Hyrule), so a spin much longer than that
    mostly burns its thread's time: 90 % of the spin's 15 % of a core in Hyrule was on the job workers and the actor
    executors. 5 us for every thread cut the process's CPU a frame 3.3 % at the same fps (6 pairs, Hyrule, 16 threads); the
    serial threads keep 20 us, as their wait ends are on the frame's path. HOS_SPIN_OTHER_US=20: as before, one spin for all;
@@ -601,7 +618,7 @@ int64_t hos_spin_ns(void) {
     int64_t b = __atomic_load_n(&both, __ATOMIC_RELAXED);
     if (b < 0) {
         const char *e = getenv("HOS_SPIN_US"), *o = getenv("HOS_SPIN_OTHER_US");
-        int64_t s = e ? atoll(e) : 20, other = o ? atoll(o) : 5;   /* (us, clamped before they become ns) */
+        int64_t s = e ? atoll(e) : 20, other = o ? atoll(o) : process_threads() > SHORT_SLEEP_TIMER_THREADS ? 5 : s;   /* (us, clamped before they become ns) */
         s = (s < 0 ? 0 : s > 1000000 ? 1000000 : s) * 1000;
         other = (other < 0 ? 0 : other > 1000000 ? 1000000 : other) * 1000;
         other = other > s ? s : other;
@@ -997,7 +1014,6 @@ static void sleep_ns(int64_t ns, int guest);
    frame's CPU time fell 9 %. On 8 threads and more yielding stays: with the timer for all sleeps there were no long
    frames either way and Kokiri lost 0.2 fps under its cap, and the timer made TOTK's 20 us waits for its job workers 25x
    longer, ~2000 a second on the frame's critical path. */
-enum { SHORT_SLEEP_TIMER_THREADS = 6 };
 static int hos_short_sleep_timer(const char *asked, int threads) {
     if (asked) return env_value_off(asked) ? 0 : 2;
     return threads > 0 && threads <= SHORT_SLEEP_TIMER_THREADS ? 1 : 0;
@@ -1064,13 +1080,7 @@ static void sleep_ns(int64_t ns, int guest) {
     static int choice = -1;
     int chosen = __atomic_load_n(&choice, __ATOMIC_RELAXED);
     if (chosen < 0) {
-        int threads = 0;
-#if defined(_WIN32)   /* (measured on Windows only: elsewhere the timer when asked for) */
-        /* (with more than one processor group the mask is one group's, not the process's: not known then) */
-        DWORD_PTR proc = 0, sys = 0;
-        if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
-            threads = __builtin_popcountll((uint64_t)proc);
-#endif
+        const int threads = process_threads();   /* (0 elsewhere than Windows: the timer when asked for) */
         int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
 #if !defined(_WIN32)
         /* (hookshot) Linux: the game's own sleeps wait on the timer whatever the processors, the host's still yield (1).
