@@ -2490,10 +2490,28 @@ void note_pass_end(VkCommandBuffer cmd) {
     last_pass_end_cmd = cmd, last_pass_end_epoch = work_epoch.load(std::memory_order_relaxed);
 }
 int64_t pass_barriers_relaxed() { return st_pass_relaxed.load(std::memory_order_relaxed); }
+// (hookshot) RX_VK_GAME_ORDER: a draw pass right after another (nothing recorded between) waits in its fragment stages only
+// (pass_start_barrier), and a compute dispatch right after another gets no barrier (vk_draw.cpp dispatch): their order is the
+// game's own barriers', as on the console, where the game records nvnCommandBufferBarrier wherever a pass samples what an
+// earlier one drew or a dispatch reads what another wrote, and the replay keeps each as a full barrier. A switch between draws
+// and compute, the replay's own copies, clears, fills and uniform updates, an indirect dispatch, and the game's barriers keep
+// the full barrier. Every pass begin and every dispatch was a full barrier: 2.3 ms of a 9.7 ms GPU frame in Kokiri Forest
+// elsewhere, measured. On NVIDIA by default (the game's barriers were placed for an NVIDIA GPU), off on others, where it has
+// not run: RX_VK_GAME_ORDER=1 there to try it, 0 off everywhere. RX_VK_PASS_BARRIER=game / full still set the pass part.
+bool game_order() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_GAME_ORDER");
+        const bool v = e ? !env_value_off(e) : dev.props.vendorID == 0x10de;
+        logf("vk: passes and dispatches right after others ordered by the game's barriers: %s (RX_VK_GAME_ORDER%s)",
+             v ? "on" : "off", e ? " set" : v ? "=0: off" : "=1: on");
+        return v;
+    }();
+    return on;
+}
 void pass_start_barrier(VkCommandBuffer cmd) {
     static const bool game = [] {
         const char* e = getenv("RX_VK_PASS_BARRIER");
-        const bool on = e && !strcmp(e, "game");
+        const bool on = e ? !strcmp(e, "game") : game_order();
         if (on) logf("vk: RX_VK_PASS_BARRIER=game: a draw pass right after another, no barrier of the game's between, waits in its fragment stages only");
         return on;
     }();

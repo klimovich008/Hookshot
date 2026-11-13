@@ -969,6 +969,24 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     return w;
 }
 
+/* (hookshot) The pads into the game's input, in front and behind other windows alike: while the Insert menu is open they
+   are its own, as the keyboard is (key()), and after it closed until they are let go (the press that closed it never
+   reaches the game). They are read either way, so the letting go is seen. Whether they were used (a button, or a stick
+   past a third) */
+static int pads_merge(uint64_t *buttons, int32_t stick[4]) {
+    uint64_t pb = 0;
+    int32_t ps[4] = {0};
+    pads_read(&pb, ps);
+    if (rx_option(1, 0)) pad_after_menu = 1;
+    else if (pad_after_menu && !pad_raw_now) pad_after_menu = 0;
+    if (!pad_after_menu) {
+        *buttons |= pb;
+        stick_max(stick, ps);
+    }
+    return pb || ps[0] > 12000 || ps[0] < -12000 || ps[1] > 12000 || ps[1] < -12000 || ps[2] > 12000 || ps[2] < -12000 ||
+           ps[3] > 12000 || ps[3] < -12000;
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -1000,24 +1018,10 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
-        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        if (pads_in_background(env, rx_option(4, 0))) pads_merge(buttons, stick);
         return;
     }
-    {   /* (hookshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
-           closed until they are let go (the press that closed it never reaches the game) */
-        uint64_t pb = 0;
-        int32_t ps[4] = {0};
-        pads_read(&pb, ps);
-        if (rx_option(1, 0)) pad_after_menu = 1;
-        else if (pad_after_menu && !pad_raw_now) pad_after_menu = 0;
-        if (!pad_after_menu) {
-            *buttons |= pb;
-            stick_max(stick, ps);
-        }
-        if (pb || ps[0] > 12000 || ps[0] < -12000 || ps[1] > 12000 || ps[1] < -12000 || ps[2] > 12000 || ps[2] < -12000 ||
-            ps[3] > 12000 || ps[3] < -12000)
-            player_used();
-    }
+    if (pads_merge(buttons, stick)) player_used();
     binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons once its capture is known) */
     for (int i = 0; i < HOS_SW_N; i++)
         if (bound_down(i, 0)) *buttons |= 1ULL << i, player_used();

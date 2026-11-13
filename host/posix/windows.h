@@ -338,6 +338,9 @@ static inline SIZE_T GetLargePageMinimum(void) { return 0; }
 #define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x4
 HMODULE LoadLibraryA(LPCSTR name);
 #define LoadLibrary LoadLibraryA
+/* (hookshot) why this thread's last LoadLibraryA failed, as dlerror() said (a missing file, or a symbol the library needs
+   and nothing loaded has); "" when it did not. GetLastError() is ERROR_FILE_NOT_FOUND for every failure */
+const char *hos_load_error(void);
 BOOL FreeLibrary(HMODULE m);
 FARPROC GetProcAddress(HMODULE m, LPCSTR name);
 HMODULE GetModuleHandleA(LPCSTR name);

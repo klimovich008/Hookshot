@@ -277,7 +277,11 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     memcpy(slash + 1, dll, strlen(dll) + 1);
     HMODULE m = LoadLibraryA(path);
     if (!m) {
+#ifdef _WIN32
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
+#else   /* (why: a missing file, or a symbol it needs that this executable lacks, as one from another build) */
+        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): WebGPU", path, hos_load_error());
+#endif
         return NULL;
     }
     vk_module = m;

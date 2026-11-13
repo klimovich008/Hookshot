@@ -767,7 +767,9 @@ static const char *linux_name(const char *base) {
         if (!strcasecmp(base, map[i][0])) return map[i][1];
     return NULL;
 }
+static __thread char load_error[512];   /* (dlerror()'s text for the last failure: hos_load_error) */
 HMODULE LoadLibraryA(LPCSTR name) {
+    load_error[0] = 0;
     if (!name) return NULL;
     char path[PATH_MAX];
     snprintf(path, sizeof path, "%s", name);
@@ -785,9 +787,14 @@ HMODULE LoadLibraryA(LPCSTR name) {
         }
     }
     HMODULE m = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!m) last_error = ERROR_FILE_NOT_FOUND;
+    if (!m) {
+        last_error = ERROR_FILE_NOT_FOUND;
+        const char *why = dlerror();
+        snprintf(load_error, sizeof load_error, "%s", why ? why : "");
+    }
     return m;
 }
+const char *hos_load_error(void) { return load_error; }
 BOOL FreeLibrary(HMODULE m) { return m && dlclose(m) == 0; }
 FARPROC GetProcAddress(HMODULE m, LPCSTR name) { return m ? (FARPROC)dlsym(m, name) : NULL; }
 HMODULE GetModuleHandleA(LPCSTR name) {

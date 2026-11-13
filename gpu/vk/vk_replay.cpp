@@ -1393,11 +1393,21 @@ void maybe_split(VkCommandBuffer& cmd) {
     static const int64_t every = getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 120;
     if (split_off || !rec_cur || every <= 0 || ++part_work < every || rec_parts + 1 >= kMaxParts || dump_on()) return;
     end_pass(cmd);
-    flush_ub_updates(cmd);
+    // (a part's end does not write the stream's uniform updates recorded so far into guest memory, nor start a new window
+    // of them: the submission's last part writes them all, as an unsplit submission does (finish_recording). Written at
+    // each part's end, the draws of the later parts that read those ranges from guest memory saw a state an unsplit
+    // submission never shows: on Intel, white blocks and haze at Kokiri, and a whole-screen white flash every 8 frames on
+    // the Arc 140V (issue 999). Measured on Intel only, so the default there; RX_VK_SPLIT_UBFLUSH=1: written at each part's
+    // end, as before, =0: at the last part's on any GPU)
+    static const bool part_flush = [] {
+        const char* e = getenv("RX_VK_SPLIT_UBFLUSH");
+        return e ? env_on("RX_VK_SPLIT_UBFLUSH") : dev.props.vendorID != 0x8086;
+    }();
+    if (part_flush) flush_ub_updates(cmd);
     memory_end_submission(cmd, rec_cur->part);
     full_barrier(cmd, "barrier (recording end)");
     submit_recording(*rec_cur, false);
-    ub_first_of_recording = ub_updates.size();
+    if (part_flush) ub_first_of_recording = ub_updates.size();
     Recording& r = begin_recording(rec_cur_value);
     memory_begin_submission();
     full_barrier(r.cmd, "barrier (recording start)");
