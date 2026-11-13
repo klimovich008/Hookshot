@@ -521,8 +521,29 @@ bool memory_table_flush() {
     table_defer = false;
     if (table_pending.empty()) return false;
     std::vector<std::pair<uint64_t, uint64_t>> pages;   // (page, value), in the order they were set
-    for (const TableRun& r : table_pending)
-        for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    // (hookshot) a heap that has no room left (Windows' commit limit: #2941, 32 GB of RAM with a 2 GB page file, Hookshot at 24 GB
+    // as Hyrule Field loaded) threw std::bad_alloc here, on the presenting thread, and nothing between it and the game's code
+    // catches: the game closed. Then the changes are written into the table at once, as RX_VK_TABLE_NOW does: work submitted
+    // before may read them early, against the game closing
+    try {
+        size_t n = 0;
+        for (const TableRun& r : table_pending) n += r.count;
+        pages.reserve(n);
+        for (const TableRun& r : table_pending)
+            for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    } catch (const std::bad_alloc&) {
+        static std::atomic<int> said{0};
+        uint64_t n = 0;
+        for (const TableRun& r : table_pending) {
+            n += r.count;
+            for (uint64_t i = 0; i < r.count; i++) guest_pages[r.first + i] = r.address ? r.address + (i << 12) : 0;
+        }
+        table_pending.clear();
+        if (said.fetch_add(1) < 8)
+            logf("vk: page table: no memory for this recording's %llu page changes (the commit limit?): written at once",
+                 (unsigned long long)n);
+        return false;
+    }
     table_pending.clear();
     std::stable_sort(pages.begin(), pages.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<uint64_t> run;

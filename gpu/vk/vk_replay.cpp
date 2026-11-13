@@ -2043,11 +2043,10 @@ void finish_recording(uint64_t value) {
 // RX_VK_REPLAY_PIN=0: off. (Only preferring the core, as the thread's ideal processor with every processor allowed, gained
 // nothing there: the pin is what helps)
 bool async_on();
-// (Windows only: on Linux a thread inherits the affinity of the one that makes it, and the back end's threads made on
-// first use inside a replay (the capture's copy helpers, the shader workers, the pool imports...) would all have stayed on
-// the reserved core. Windows gives a new thread the process's)
+// (On Linux pthread_create inherits the calling thread's affinity, so win32_posix.c's thread_self and thread_entry
+// apply process_affinity when a new thread registers via CreateThread or GetCurrentThread in SetThreadDescription,
+// keeping helper threads made on first use inside a replay off the reserved core, as Windows does)
 uint64_t replay_pin_mask() {
-#if defined(_WIN32)
     static const uint64_t m = [] {
         const char* e = getenv("RX_VK_REPLAY_PIN");
         const uint64_t r = !(e && atoi(e) == 0) && host->reserved_cpus ? host->reserved_cpus() : 0;
@@ -2055,9 +2054,6 @@ uint64_t replay_pin_mask() {
         return r;
     }();
     return m;
-#else
-    return 0;
-#endif
 }
 thread_local int replay_pin_depth = 0;
 thread_local DWORD_PTR replay_pin_prev = 0;
@@ -3152,13 +3148,23 @@ void log_frame_stats() {
         l_sync_b = sync_b, l_sync_c = sync_c, l_wb_b = wb_b;
         static int64_t l_d, l_sk, l_di, l_pass, l_sub, l_up, l_upb, l_bar, l_ubu, l_ubo, l_wait;
         logf("vk: %lld presents, %.1f fps; a frame: %.0f draws (%.0f skipped), %.0f dispatches, %.0f passes, %.0f "
-             "barriers, %.0f submits, %.1f uploads (%.1f MB), %.0f ub updates (%.0f overlays), GPU-bound wait %.1f ms; "
+             "barriers, %.0f submits, %.1f uploads (%.1f MB), %.0f ub updates (%.0f overlays), GPU-bound wait %.1f ms (recording slots only); "
              "%lld pipelines (%.0f ms), %lld programs (%lld failed), %zu textures (%llu MB)",
              (long long)presents, 120.0 / secs, (d - l_d) / 120.0, (sk - l_sk) / 120.0, (di - l_di) / 120.0,
              (passes - l_pass) / 120.0, (st_barriers - l_bar) / 120.0, (st_submits - l_sub) / 120.0,
              (up - l_up) / 120.0, (upb - l_upb) / 120.0 / 1048576.0, (st_ub_updates - l_ubu) / 120.0,
              (st_ub_overlays - l_ubo) / 120.0, (st_wait_ns - l_wait) / 120.0 / 1e6, (long long)pl, pms,
              (long long)tr, (long long)fl, texture_count(), (unsigned long long)(texture_bytes() >> 20));
+        {
+            const auto waits = gpu_wait_stats::counters.take();
+            const double scale = 1.0 / (120.0 * 1e6);
+            logf("vk: host time in GPU resource waits: %.2f ms a frame (fences %.2f, timelines %.2f, idle %.2f, queries %.2f; "
+                 "sum across threads, not frame time; excludes pacing and driver submit/present blocking)",
+                 (waits[gpu_wait_stats::kFence] + waits[gpu_wait_stats::kTimeline] + waits[gpu_wait_stats::kIdle] +
+                  waits[gpu_wait_stats::kQuery]) * scale,
+                 waits[gpu_wait_stats::kFence] * scale, waits[gpu_wait_stats::kTimeline] * scale,
+                 waits[gpu_wait_stats::kIdle] * scale, waits[gpu_wait_stats::kQuery] * scale);
+        }
         draw_skip_report(120.0);
         {   // (hookshot: the full barriers recorded and the ones left out as the second of two in a row, RX_VK_BARRIER_DEDUPE_OFF=1)
             static int64_t l_made, l_left;
@@ -3414,7 +3420,7 @@ std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_
     const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
     return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
 }
-void do_present(const nvn_tex* t, const int crop[4]) {
+void do_present(const nvn_tex* t, const int crop[4], float cover) {
     static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin. AMD Anti-Lag 2 (vk_antilag.cpp) waits there as well: the
@@ -3491,12 +3497,12 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         const bool fg_after = framegen_on() && tex && !fg_inline;
         interpolated = framegen_on() && tex && fg_inline &&
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
-                                       sh, crop);
+                                       sh, crop, cover);
         texture_frame(completed());
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
-        wide_sides_tick();
+        wide_sides_tick(cover);
         if (presents == 1) hang_watch_start(), gpu_hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
             // CPU's writes to those 4 KB pages logged with the writer's stack (host page watch: 12 reports)
@@ -3582,7 +3588,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (its slot is free again once the next submit's value is reached: that one comes after it)
             Recording& g = begin_recording(value + 1);
             interpolated = framegen_record(g.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample),
-                                           sw, sh, crop);
+                                           sw, sh, crop, cover);
             submit_recording(g, false);
         }
         // (frame generation at Off or Auto, where DLSS-G is not asked: its feature, if made, let go, vk_dlss.cpp)
@@ -4600,6 +4606,7 @@ struct Job {
     uint64_t queue = 0;         // (a submit's queue)
     int crop[4] = {0, 0, 0, 0};
     bool has_crop = false;
+    float cover = 0.0f;         // (a present's: ultrawide's loading cover as the game presented the frame, wide_cover_sample)
     nvn_prog prog;
     std::chrono::steady_clock::time_point queued;
 };
@@ -4667,7 +4674,7 @@ void replay_thread_main() {
         case JOB_PRESENT:   // (the frame's work whole before it is shown)
             drain(0);
             present_value = j.value;
-            do_present(j.has_tex ? &j.tex : nullptr, j.has_crop ? j.crop : nullptr);
+            do_present(j.has_tex ? &j.tex : nullptr, j.has_crop ? j.crop : nullptr, j.cover);
             break;
         case JOB_TEXTURE_RELEASED:   // (after the stopped work that may use it)
             drain(1);
@@ -4834,11 +4841,12 @@ void present(const nvn_tex* t, const int crop[4]) {
             drain(0);   // (the frame's work whole before it is shown)
             update_blocked();
             present_value = ++q_values;
-            return do_present(t, crop);
+            return do_present(t, crop, wide_cover_sample());
         }
-        return do_present(t, crop);
+        return do_present(t, crop, wide_cover_sample());
     }
     Job j{JOB_PRESENT};
+    j.cover = wide_cover_sample();
     if (t) j.tex = *t, j.has_tex = true;
     if (crop) std::memcpy(j.crop, crop, sizeof j.crop), j.has_crop = true;
     enqueue(std::move(j));
@@ -5052,6 +5060,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
         if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
+        if (id == HOS_OPT_AUTO_RUN) return opts.auto_run;   // (host/nn_hid.c and host/auto_run.h)
         if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
         if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;
         if (id == HOS_OPT_PROMPTS) return opts.prompts;

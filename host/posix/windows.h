@@ -470,6 +470,8 @@ static inline void *RtlVirtualUnwind(DWORD type, DWORD64 base, DWORD64 pc, PRUNT
 #define VK_LBUTTON 0x01
 #define VK_RBUTTON 0x02
 #define VK_MBUTTON 0x04
+#define VK_XBUTTON1 0x05   /* (Mouse 4 and Mouse 5, the side buttons) */
+#define VK_XBUTTON2 0x06
 #define VK_BACK 0x08
 #define VK_TAB 0x09
 #define VK_RETURN 0x0D

@@ -45,6 +45,7 @@ struct Texture {
     bool astc = false;        // ASTC blocks decoded into RGBA8 (block_w x block_h)
     bool bc = false;          // (and kept as BC3 or BC7: big ones, re-encoded on the GPU after decoding; vk_texture.cpp)
     bool bc_resized = false;  // (hookshot-amd: its BC image is a resized copy, uneven block levels on AMD; vk_texture.cpp)
+    uint8_t bc1 = 0;          // (hookshot: of a BC3 image, 0 not decided yet, 1 kept BC3 (alpha seen), 2 BC1: every block opaque)
     int block_w = 1, block_h = 1, bpb = 0;   // the storage's blocks
     // the game's texture
     uint64_t gpu = 0, guest = 0, guest_size = 0;   // storage (GPU address, guest address, bytes)
@@ -54,7 +55,7 @@ struct Texture {
     // contents
     bool uploaded = false;    // from guest memory, as of upload_gen
     uint32_t upload_gen = 0;
-    uint64_t bc_retry_frame = 0;   // (hookshot) a BC3 image whose upload failed: tried again from this frame (vk_texture.cpp)
+    uint64_t retry_frame = 0;   // (hookshot) an image whose upload failed: tried again from this frame (vk_texture.cpp)
     uint64_t map_sig = 0;     // (a texture in a virtual pool: its pages' mapping when last uploaded)
     std::vector<uint64_t> page_map;   // (and each 64 KB page's guest address then: what a remap changed)
     struct Run { uint64_t off, guest, n; };   // (and its storage as runs of contiguous guest memory)

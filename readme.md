@@ -290,7 +290,8 @@ shows bands or blocks. Off unless set; `RX_VK_ASTC_RGBA8=1` above still wins whe
 ## In-game menu
 
 By default, press <kbd>Insert</kbd>, <kbd>F1</kbd> or <kbd>Esc</kbd> in game. On a controller, press Home or Select and
-Start together; on a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
+Start together; on a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>, unless a row of
+Controls takes the touchpad as its input.
 The same keys close it; with every Menu shortcut, <kbd>Esc</kbd> goes back a page or closes the open menu.
 <kbd>F1</kbd> always works. **Controls → Menu shortcut** can leave <kbd>Insert</kbd> free for another overlay (F1 only).
 With Insert or F1, or with F1 only, <kbd>Esc</kbd> does not open the menu: it only lets the mouse go. Options saved by
@@ -336,7 +337,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Frame generation | Off, Auto, 2x to 8x | Off |
 | | Frame generation by | Auto (NVIDIA DLSS Frame Generation where it runs: RTX 40 and newer, with a temporal Upscaler; else the built-in one; with frame generation on, the row shows who makes the frames, as Auto: DLSS FG, and why not DLSS FG when another does), Built-in FG (changes at once) | Auto |
 | | Frame pacing | Off, On | Off |
-| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
+| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped, 30 FPS (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
@@ -348,6 +349,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
 | | HDR contrast | 50% to 200% around mid grey (while HDR is on) | 100% |
 | | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS, FSR and TAAU do not take its scene yet: the game's own upscale runs) | Vanilla |
+| | Texture detail | Auto, Full, Medium, Low | Auto |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
@@ -376,6 +378,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Invert camera Y | Off, On | Off |
 | | Camera speed | 50% to 400%, in steps of 25 | 100% |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
+| | Auto run | Off, On | Off |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck (on the Controls page) | Auto |
@@ -417,10 +420,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
+  **30 FPS** reduces rendering work for handhelds and slower PCs while keeping real-time game speed. It is the last option
+  in the row so existing saved caps keep their meaning. At 30, Game speed follows real time even if Per frame is selected.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
-  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
+  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `<61-1000>` sets a cap for one
   run.
 - **Bug report** writes a folder `bug-reports/<date>_<time>` in the game folder with what an issue needs: `report.txt`,
   which answers the [game problem form](https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml)'s
@@ -529,7 +534,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   while the game was in front.
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
-  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
+  down). Auto counts the speakers Windows names, not the channels: an audio interface whose outputs are not set up as
+  surround speakers (a Focusrite Scarlett's 8 outputs, for one) is stereo, so voices and the ocarina do not go to an
+  output with nothing connected. For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
@@ -559,6 +566,11 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   game's own camera speed option still picks the speed this multiplies.
 - **Stick dead zone:** how far a stick moves from center in any direction before it counts. Default is about 24%. Use
   a lower value for a precise stick or a higher one for a stick that drifts. The game also applies its own dead zone.
+- **Auto run:** the sprint goes on after the run button (A) is let go. Hold A for 0.4 s while moving (the roll, then
+  the sprint, as usual), let go, and A stays held for the game while the stick stays pushed; a short press (a roll on
+  its own) is not kept. Letting go of the stick or pressing A again stops it (a long hold keeps it again). Only while
+  Link is yours to move: an event (a talk, a cutscene), the pause menu, the map, the Insert menu and the ocarina's notes
+  end it, so A never picks an entry, skips text or plays a note there.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
 - **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
@@ -601,8 +613,8 @@ anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes th
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
 To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
-Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
-face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
+Controls tab's Controls page. Choose a row and a column (Input 1 or 2 for the gamepad, Key 1 or 2 for the keyboard: each
+control takes two of each), press <kbd>Enter</kbd> (or the bottom face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
 `hookshot_options.ini`.
 
@@ -779,7 +791,9 @@ without a format (`vk: fsr3: ... can run on this GPU` in the log). It upscales o
 scene's colour, its depth, motion from the camera with the skinned characters' own drawn over it (Link, his shield and
 the people around him keep their outline while they move), and the same camera jitter (`RX_VK_FSR_JITTER=0` turns it
 off). Things that move by themselves and are not skinned (Navi's body, props) can still trail. `RX_VK_FSR3_CHAIN=0` gives
-it the camera's motion alone, as before.
+it the camera's motion alone, as before. With HDR on **Native**, it takes the game's HDR colour as linear light, so
+highlights above the paper white are kept (`RX_VK_FSR3_HDR=0`: cut at the paper white, as before; with
+`RX_VK_FSR3_CHAIN=0` they are cut too).
 
 </details>
 
@@ -876,7 +890,7 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   takes their place.
 - **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime --accept-amd-license` downloads those two
   DLLs and AMD's license from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and
-  puts them in the game folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `workfx-sdk`).
+  puts them in the game folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `work/ffx-sdk`).
   `python -I scripts/ffx_sdk.py --accept-amd-license --game <game folder>` does the same for a game built already.
   Without `--accept-amd-license` nothing is downloaded (the script asks when run by hand), as with NVIDIA's license for
   DLSS. AMD DLLs already in the game folder that are not v2.4.0's (a newer SDK put there by hand) are left alone, and

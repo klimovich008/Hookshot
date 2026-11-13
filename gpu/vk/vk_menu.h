@@ -35,6 +35,8 @@ struct Options {
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
                           // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
+    int texture_detail = 0;   // (hookshot) Texture detail: 0 Auto, 1 Full, 2 Medium, 3 Low (the big textures' top levels left out,
+                              // gpu/vk/vk_texture.cpp texture_detail_dims; read as each texture is made)
     int anisotropy = 4;   // (hookshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
@@ -57,6 +59,7 @@ struct Options {
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
+    int auto_run = 0;  // (hookshot) Auto run: A (the sprint) kept held after it is let go (host/auto_run.h)
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)

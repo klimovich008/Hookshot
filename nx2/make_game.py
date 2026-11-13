@@ -1326,8 +1326,11 @@ def game_env(environ=None):
     return env
 
 
-def not_prepared(why):
-    print("%s (%s): the game prepares them at its first start" % (NOT_PREPARED, why), flush=True)
+FIRST_START = "the game prepares them at its first start"   # (the builders' windows tell this ending from the others)
+
+
+def not_prepared(why, then=FIRST_START):
+    print("%s (%s): %s" % (NOT_PREPARED, why, then), flush=True)
 
 
 def prepare_skipped(a, environ=None):
@@ -1364,7 +1367,10 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     elif code == 3:
         not_prepared("no usable Vulkan here")
     elif code == 4:   # (gpu/vk/vk_main.cpp prepare_watchdog: nothing moved for minutes, the driver stuck after a fault in it)
-        not_prepared("the GPU driver stopped responding")
+        # (it left hookshot_prepare_skipped beside the game: its starts skip the preparation too, so none stops in the same place,
+        # until a --prepare-shaders run goes through and removes it)
+        not_prepared("the GPU driver stopped responding",
+                     "the game builds each shader when it first draws it, and the next build or update tries the preparation again")
     elif code:
         not_prepared("the game stopped with exit status %d" % code)
     return code
@@ -2223,9 +2229,14 @@ def main(a=None):
         refuse_dump_links(a.romfs)
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)
         run(PY + ["nx2/unpack.py", exefs])
+        # (before the folder's copies are touched: a dump of another version, refused, used to replace .hookshot_exefs first, and
+        # the next build from the .nup those were read from took them as its own and was refused too)
+        check_supported_build(exefs)
         link_or_copy(a.romfs, romfs)
         shutil.rmtree(kept, ignore_errors=True)
         shutil.copytree(exefs, kept)
+        with contextlib.suppress(FileNotFoundError):   # (the copies are this dump's now, not the .nup's that stamp names)
+            os.remove(os.path.join(out, ".hookshot_romfs"))
     check_supported_build(exefs)
 
     # (made once on the development PC: lists of addresses and counts, no game code)

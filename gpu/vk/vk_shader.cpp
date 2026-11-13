@@ -264,7 +264,8 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         }
     }
     Shader::Ampere::native_matrix_multiply = dev.native_mma && !graphics && native_key;
-    {   // (super build) RX_VK_LOWER_SKIP=<key prefix,...>: those programs left unlowered, as if they did not lower (a bisection)
+    {   // RX_VK_LOWER_SKIP=<key prefix,...>: those programs left unlowered, as if they did not lower (a bisection). It is in
+        // translator_stamp, so a cache made with it set is kept apart from one made without
         static const std::string skip = getenv("RX_VK_LOWER_SKIP") ? getenv("RX_VK_LOWER_SKIP") : "";
         if (!skip.empty()) {
             char hex[24];
@@ -964,6 +965,11 @@ const std::vector<Code>& codes_of(const NvnState& s) {
 }
 
 std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
+std::atomic<int64_t> st_left_out;   // (the networks a card leaves out on purpose: not failures)
+/// A network this card leaves out on purpose (translate_into): upscale_stub draws in its place, so it is not a failure
+struct LeftOut : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 } // namespace
 
@@ -1215,7 +1221,7 @@ uint64_t translator_stamp() {
     // the programs already cached. tests/test_program_stamp_knobs.py checks the translator's switches against this list)
     for (char** e = _environ; e && *e; e++)
         for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_MARKERS",
-                                "RX_VK_NO_CBUF_LOAD_RULE", "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
+                                "RX_VK_NO_CBUF_LOAD_RULE", "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "RX_VK_LOWER_SKIP", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -1289,7 +1295,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
                 if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
-                    throw std::runtime_error("a network left out on this card");
+                    throw LeftOut("a network left out on this card");
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val
@@ -1405,6 +1411,17 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         ptr_diag_log(p.key, csc ? "compute" : fsc ? "graphics" : "vertex");
         if (seed_capture) *seed_capture = std::move(kept);
         else program_cache_save(p, kept);
+    } catch (const LeftOut& e) {   // (counted and said apart from the failures: they would use up the 30 lines below)
+        p.failed = true;
+        if (!forced || forced->want.empty()) {   // (not an answer seed_compute tries)
+            st_left_out++;
+            static std::atomic<bool> said;
+            if (!said.exchange(true))
+                logf("vk: the game's networks this card does not run are left out (the first: program %016llx), not an error: a "
+                     "linear upscale takes their place", (unsigned long long)p.key);
+            else if (getenv("RX_VK_IR"))
+                logf("vk: program %016llx: %s", (unsigned long long)p.key, e.what());
+        }
     } catch (const std::exception& e) {
         p.failed = true;
         const bool trial = forced && !forced->want.empty();   // (an answer seed_compute tries: it may well not translate)
@@ -2440,6 +2457,9 @@ void shader_stats(int64_t* translated, int64_t* failed) {
     static int64_t hits_logged;
     if (st_cache_hits.load() >= hits_logged + 500) logf("vk: %lld programs from the program cache", (long long)(hits_logged = st_cache_hits.load()));
     *translated = st_translated, *failed = st_failed;
+}
+int64_t shader_left_out() {
+    return st_left_out;
 }
 double shader_translate_ms() {
     return st_translate_ns.load() / 1e6;
