@@ -8,7 +8,8 @@ using System.Windows;
 
 namespace HookshotBuilder;
 
-/// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>. When these tools are
+/// The launcher's Update, and --update <game folder> --tag <release> (what a game built when it asked about updates itself
+/// starts). When these tools are
 /// not that release, the release's HookshotBuilder.zip is downloaded and unpacked beside this app, and the new app is started with
 /// --fetched to build the folder; when they are, the folder is built again here (nx2/make_game.py --update: from the game files the
 /// folder keeps).
@@ -35,7 +36,7 @@ static class Updater
         UpdateFolder(w, folder, tag, fetched);
     }
 
-    // ---- the update tracks (the Track menu; by default the track of these tools). host/hos_update.c and
+    // ---- the update tracks (the Track menu; by default the track of these tools). builder/setup/setup.c and
     // builder/linux/linux_update.py have the same rules ----
     public const string Release = "release", Candidate = "rc", Nightly = "nightly";
     const string Releases = "https://api.github.com/repos/NotRexed/Hookshot/releases";

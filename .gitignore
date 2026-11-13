@@ -13,6 +13,8 @@ romfs/
 *.xci
 gamefile/
 *.nup
+# scripts/hookshot_bench.py's run folders: game screenshots and the full log
+bench-runs/
 *.nsz
 *.xcz
 

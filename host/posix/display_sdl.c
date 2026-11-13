@@ -109,6 +109,7 @@ static void keys_update(void) {
         v[VK_MENU] = v[VK_LMENU] || v[VK_RMENU];
         const uint32_t b = hos_sdl_mouse_buttons();
         v[VK_LBUTTON] = (b & 1) != 0, v[VK_MBUTTON] = (b & 2) != 0, v[VK_RBUTTON] = (b & 4) != 0;
+        v[VK_XBUTTON1] = (b & 8) != 0, v[VK_XBUTTON2] = (b & 16) != 0;   /* (SDL's X1 and X2: Mouse 4 and 5) */
     }
     for (int i = 0; i < 256; i++) hos_posix_keys[i] = v[i];
 }
@@ -126,7 +127,13 @@ static void drawable_size(void *w, int *width, int *height) {
 /* (SDL's display calls belong on this thread: the loop asks every second, the renderer reads what it found) */
 static volatile int refresh_now;
 static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
-static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
+/* (the desktop's size in pixels, read on this thread once the window is made: the Quality preset Auto (this PC)) */
+static volatile int desktop_w, desktop_h;
+static void desktop_size(void *w, int *width, int *height) {
+    (void)w;
+    *width = __atomic_load_n(&desktop_w, __ATOMIC_RELAXED), *height = __atomic_load_n(&desktop_h, __ATOMIC_RELAXED);
+}
+static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz, desktop_size};
 
 /* Esc let the captured mouse go just before it opened the Insert menu (Menu shortcut "Insert, F1 or Esc"):
    the capture that comes back when the menu closes. Spent by the next capture or menu */
@@ -291,6 +298,11 @@ void hos_display_loop(void) {
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
+    {   /* (the desktop's size, before the renderer starts: the Quality preset Auto (this PC) reads it once, desktop_size) */
+        int dw, dh;
+        if (hos_sdl_desktop_size(&dw, &dh))
+            __atomic_store_n(&desktop_w, dw, __ATOMIC_RELAXED), __atomic_store_n(&desktop_h, dh, __ATOMIC_RELAXED);
+    }
     pointer_update(0, 0);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     DWORD refresh_asked = GetTickCount();

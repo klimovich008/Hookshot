@@ -166,6 +166,7 @@ struct State {
     std::atomic<uint64_t> last_frame{0};   // (the frame an engine last drew: read on the game's thread too)
     float last_jitter[2]{};   // (its camera's jitter: the frame before's, for the next one)
     float last_vp[16]{};      // (its camera's view-projection: the frame before's)
+    std::chrono::steady_clock::time_point last_at{};   // (when it was taken: the camera cut's time between the two)
     TemporalJitter jitter;    // (one completed scene size, sequence and frame)
     std::unordered_map<VkImage, VkImageView> depth_views;
     uint64_t depth_views_gen = 0;
@@ -1005,6 +1006,26 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     float previous[16];
     std::memcpy(previous, s.last_vp, sizeof previous);
     dlss_math::unjitter(previous, s.last_jitter);
+    // (hookshot) A camera cut starts a new history: an area load, a spawn or a cutscene's cut moves the camera 5 to 180 m in one
+    // frame, and DLSS, FSR and their frame generation blended the new view with the old one (smears and ghosts after every load,
+    // frames generated between two unrelated pictures). Only the lost camera, another size or target, or a skipped frame started
+    // one before. dlss_math::camera_cut; RX_VK_TEMPORAL_CUT=0: off. Each cut is logged, 24 at most
+    {
+        static const bool cut_on = !getenv("RX_VK_TEMPORAL_CUT") || std::atoi(getenv("RX_VK_TEMPORAL_CUT")) != 0;
+        const auto at = std::chrono::steady_clock::now();
+        if (cut_on && !reset && s.last_at.time_since_epoch().count()) {
+            double move = 0, turn = 0;
+            const double ms = std::chrono::duration<double, std::milli>(at - s.last_at).count();
+            if (dlss_math::camera_cut(s.last_vp, cam.current, ms, &move, &turn)) {
+                reset = true;
+                static int cuts;
+                if (++cuts <= 24)
+                    logf("vk: temporal: camera cut (moved %.2f, turned %.1f degrees in %.1f ms): a new history (%d so far)", move,
+                         turn, ms, cuts);
+            }
+        }
+        s.last_at = at;
+    }
     const bool motion = !reset && dlss_math::reprojection(cam.current, previous, pc.reproject);
     if (!motion) reset = true;   // (without a valid reprojection, prior history has no mapping to this camera)
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];

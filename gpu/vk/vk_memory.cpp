@@ -30,6 +30,7 @@
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
+#include "import_fence.h"
 #include "mirror_trim.h"
 #include "wb_learn.h"
 #include "mirror_inherit.h"
@@ -70,6 +71,7 @@ struct Pool {
     enum : uint8_t { MIRROR_NONE, MIRROR_WANTED, MIRROR_ON, MIRROR_REFUSED } mstate = MIRROR_NONE;
     VkBuffer mirror = VK_NULL_HANDLE;
     VmaAllocation mirror_alloc = nullptr;
+    uint64_t mirror_retry_epoch = 0;   // (non-zero when refused due to transient VRAM budget: retry once past this epoch)
     uint32_t synced_gen = 0;     // every page stamped up to this generation is in the mirror
     uint64_t synced_epoch = 0;   // the submission that last brought it up to date
     uint64_t sync_seg = 0;       // (and the parallel replay's segment whose uploads did)
@@ -163,15 +165,23 @@ constexpr VkBufferUsageFlags kUsage =
 struct UdmabufCreate { uint32_t memfd, flags; uint64_t offset, size; };
 constexpr unsigned long kUdmabufCreate = (1ul << 30) | (sizeof(UdmabufCreate) << 16) | ('u' << 8) | 0x42;   // (_IOW('u', 0x42, ...))
 int dmabuf_memfd = -2, dmabuf_dev = -1, dmabuf_failures = 0;
-uint64_t dmabuf_limit = 0;
+uint64_t dmabuf_limit = 0, dmabuf_succeeded = 0;
+
+void disable_dmabuf_imports(const char* why) {
+    if (dmabuf_memfd >= 0) logf("vk: disabling udmabuf pool imports (%s); falling back to host-pointer imports", why);
+    dmabuf_memfd = -1;
+}
 
 /// The memory of guest [lo, lo + size) as an imported dma-buf; VK_NULL_HANDLE when udmabuf or the import refused it
 VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
     UdmabufCreate c{(uint32_t)dmabuf_memfd, 1 /* UDMABUF_FLAGS_CLOEXEC */, lo, size};
     const int fd = ioctl(dmabuf_dev, kUdmabufCreate, &c);
     if (fd < 0) {
+        const int err = errno;
         if (dmabuf_failures++ < 8)
-            logf("vk: guest %#llx..%#llx: no udmabuf (errno %d)", (unsigned long long)lo, (unsigned long long)(lo + size), errno);
+            logf("vk: guest %#llx..%#llx: no udmabuf (errno %d)", (unsigned long long)lo, (unsigned long long)(lo + size), err);
+        if (!dmabuf_succeeded && (err == EINVAL || err == EBADFD || err == EPERM))
+            disable_dmabuf_imports("udmabuf rejected guest memfd");
         return VK_NULL_HANDLE;
     }
     static uint32_t type = UINT32_MAX;   // (the same for every dma-buf of the window: asked once)
@@ -188,7 +198,7 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
         }
         if (type == UINT32_MAX) {
             close(fd);
-            if (dmabuf_failures++ < 8) logf("vk: a dma-buf of guest memory has no memory type");
+            disable_dmabuf_imports("driver reports no memory type for udmabuf");
             return VK_NULL_HANDLE;
         }
     }
@@ -209,8 +219,11 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
         if (dmabuf_failures++ < 8)
             logf("vk: guest %#llx..%#llx: its dma-buf not imported (VkResult %d)", (unsigned long long)lo,
                  (unsigned long long)(lo + size), (int)r);
+        if (!dmabuf_succeeded && r != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+            disable_dmabuf_imports("driver rejected udmabuf import");
         return VK_NULL_HANDLE;
     }
+    dmabuf_succeeded++;
     return memory;
 }
 
@@ -449,7 +462,18 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.pNext = &im;
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
-    const VkResult allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
+    // (hookshot, import_fence.h) the driver's question about the pointer walks the heap from here to the end of its run of
+    // read-write pages: the page after the range ends the run while it is asked. Not with the CPU write watches, which
+    // change protections themselves. RX_VK_IMPORT_FENCE=0 (or off, false, no): off
+    static const bool fence_on = [] {
+        const char* v = getenv("RX_VK_IMPORT_FENCE");
+        return !v || !env_value_off(v);
+    }();
+    VkResult allocated;
+    {
+        const ImportFence fence(ptr, bytes, fence_on && !page_watches);
+        allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
+    }
     t3 = clk::now();
     const VkResult bound = allocated == VK_SUCCESS ? vkBindBufferMemory(dev.device, p.buffer, p.memory, 0) : allocated;
     if (bound != VK_SUCCESS) {
@@ -521,8 +545,29 @@ bool memory_table_flush() {
     table_defer = false;
     if (table_pending.empty()) return false;
     std::vector<std::pair<uint64_t, uint64_t>> pages;   // (page, value), in the order they were set
-    for (const TableRun& r : table_pending)
-        for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    // (hookshot) a heap that has no room left (Windows' commit limit: #2941, 32 GB of RAM with a 2 GB page file, Hookshot at 24 GB
+    // as Hyrule Field loaded) threw std::bad_alloc here, on the presenting thread, and nothing between it and the game's code
+    // catches: the game closed. Then the changes are written into the table at once, as RX_VK_TABLE_NOW does: work submitted
+    // before may read them early, against the game closing
+    try {
+        size_t n = 0;
+        for (const TableRun& r : table_pending) n += r.count;
+        pages.reserve(n);
+        for (const TableRun& r : table_pending)
+            for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    } catch (const std::bad_alloc&) {
+        static std::atomic<int> said{0};
+        uint64_t n = 0;
+        for (const TableRun& r : table_pending) {
+            n += r.count;
+            for (uint64_t i = 0; i < r.count; i++) guest_pages[r.first + i] = r.address ? r.address + (i << 12) : 0;
+        }
+        table_pending.clear();
+        if (said.fetch_add(1) < 8)
+            logf("vk: page table: no memory for this recording's %llu page changes (the commit limit?): written at once",
+                 (unsigned long long)n);
+        return false;
+    }
     table_pending.clear();
     std::stable_sort(pages.begin(), pages.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<uint64_t> run;
@@ -2972,6 +3017,15 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     bg_cv.notify_one();
 }
 
+// (hookshot) Whether one imported pool holds all of [lo, hi): a lookup there imports nothing (vk_texture.cpp
+// upload_unswizzle_gpu asks before it reaches for one)
+int memory_guest_contained(uint64_t lo, uint64_t hi) {
+    std::lock_guard lk(pools_mu);
+    auto it = imported.upper_bound(lo);   // (pools by lo: the last one starting at or below lo)
+    if (it == imported.begin()) return 0;
+    --it;
+    return it->second.lo <= lo && it->second.hi >= hi ? 1 : 0;
+}
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
     std::lock_guard lk(pools_mu);
     auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
@@ -3118,7 +3172,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
+        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_WANTED ||
+            (p->mstate == Pool::MIRROR_REFUSED && (!p->mirror_retry_epoch || mirror_epoch < p->mirror_retry_epoch))) {
             note_in_place_read(!mirror_upload);
             return remember({p->buffer, off, size, 0});
         }
@@ -3145,6 +3200,14 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     tl = {p, pools_gen.load(std::memory_order_relaxed)};
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
     const uint64_t off = guest - p->lo;
+    if (p->mstate == Pool::MIRROR_REFUSED && p->mirror_retry_epoch && mirror_epoch >= p->mirror_retry_epoch) {
+        if (mirror_bytes + (p->hi - p->lo) <= mirror_budget()) {
+            p->mstate = Pool::MIRROR_NONE;
+            p->mirror_retry_epoch = 0;
+        } else {
+            p->mirror_retry_epoch = mirror_epoch + 120;
+        }
+    }
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
         if (written) note_direct_write(*p, off, size);
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
@@ -3669,6 +3732,7 @@ bool mirror_make(Pool& pool) {
         const bool tight = tight_rule && vram_usage(&used, &allowed) && allowed && used > allowed / 100 * 90;
         if (mirror_bytes + n > mirror_budget() || n > (1ull << 30) || tight) {
             p->mstate = n > (1ull << 30) ? Pool::MIRROR_REFUSED : Pool::MIRROR_NONE;
+            if (n > (1ull << 30)) p->mirror_retry_epoch = 0;
             static int logged;
             if (logged++ < 8)
                 logf("vk: pool %#llx (%llu MB) stays in system memory: the mirrors have %llu MB of %llu", (unsigned long long)p->lo,
@@ -3678,8 +3742,10 @@ bool mirror_make(Pool& pool) {
         }
         if (!create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc)) {
             p->mstate = Pool::MIRROR_REFUSED;
+            p->mirror_retry_epoch = mirror_epoch + 120;
             return false;
         }
+        p->mirror_retry_epoch = 0;
         {   // (hookshot) the page table points at the mirror: what the GPU wrote is there, and guest memory has it only after the write-back
             VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             da.buffer = p->mirror;
