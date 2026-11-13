@@ -27,7 +27,7 @@ constexpr bool vkCmdPushDescriptorSetKHR = true;
 constexpr uint32_t HDR_ENCODE_COMP_SPV[] = {0};
 bool init_scale() { std::abort(); }
 bool make_pipe(Pipe&, const uint32_t*, size_t, std::initializer_list<VkDescriptorType>, int) { std::abort(); }
-void logf(const char*) { std::abort(); }
+void logf(const char*, ...) { std::abort(); }   // (framegen_record logs only when the frames asked change: not here)
 void device_wait_idle_locked() { std::abort(); }
 void drop_img(Img&) { std::abort(); }
 bool make_img(Img&, uint32_t, uint32_t, VkFormat, VkImageUsageFlags) { std::abort(); }

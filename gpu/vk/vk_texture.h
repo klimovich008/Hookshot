@@ -37,6 +37,8 @@ struct Texture {
     std::vector<uint8_t> tail_bound;            // (per layer, or [0] with SINGLE_MIPTAIL: its mip tail has memory)
     std::vector<VkDeviceMemory> sparse_chunks;  // (the device memory blocks are taken from, 64 MB at a time)
     VkDeviceSize chunk_used = 0;
+    struct SparseFree { VkDeviceMemory memory; VkDeviceSize offset, size; };
+    std::vector<SparseFree> sparse_free;        // (taken for binds that failed: given out again before the chunks)
     VkSparseImageMemoryRequirements sparse_req{};
     uint32_t sparse_type = 0;
     VkDeviceSize sparse_align = 0;

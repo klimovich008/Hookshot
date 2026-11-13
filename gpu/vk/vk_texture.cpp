@@ -572,6 +572,32 @@ Staging staging(uint64_t n, uint64_t align = 256) {
     return {a.buffer, 0, a.mapped, a.allocation};
 }
 
+/* (hookshot) The staging arenas, made before the game's pools and textures are. Making one later, with ~2.5 GB of pools and
+   textures held, took 12-25 ms on the Steam Deck (an 8 MB one could take 116 ms: it is the allocator, not the size), and
+   every one of them stalled the replay thread. That was the stutter when turning the camera: the arena the last burst used
+   had gone stale and been given back, so the first upload of the next burst made another. On an empty device they are cheap.
+   RX_VK_STAGING_PREWARM=<n>: how many, 0: none. */
+}  // namespace (the prewarm is called from the replay's start: it has to link)
+void texture_staging_prewarm(int n) {
+    int made = 0;
+    for (int i = 0; i < n; i++) {
+        Arena a;
+        void* m = nullptr;
+        if (!create_buffer(kArena, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, a.buffer,
+                           a.allocation, &m)) {
+            logf("vk: staging prewarm: only %d of %d arenas could be made", made, n);
+            return;
+        }
+        a.mapped = (uint8_t*)m;
+        a.size = kArena, a.used = 0, a.value = 0;
+        a.used_at = std::chrono::steady_clock::now();
+        arenas.push_back(a);
+        made++;
+    }
+    if (made) logf("vk: %d staging arenas of %llu MB made before the game's memory", made, (unsigned long long)(kArena >> 20));
+}
+
+namespace {
 // ---- the GPU ASTC decoder (Eden's) ----
 struct AstcPush {
     uint32_t block_dims[2], layer_stride, block_size, x_shift, block_height, block_height_mask, native_tiling;
@@ -1763,7 +1789,12 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 const uint32_t px_h = std::min(g.h - y0 * (uint32_t)tex.block_h, th * (uint32_t)tex.block_h);
                 const uint64_t out_bytes = tex.astc ? (uint64_t)g.w * px_h * g.d * 4 : (uint64_t)g.tw * th * g.td * out_bpb;
                 const Staging st = staging((out_bytes + 15) & ~15ull, 16);
-                if (!st.buffer) return false;
+                if (!st.buffer) {
+                    // (the sparse binds queued by the rows before are this image's: bound now, not left in sparse_binds
+                    // for the next flush, which binds them into another texture's image)
+                    texture_resident_flush(&tex);
+                    return false;
+                }
                 if (buffer && st.buffer != buffer && !copies.empty()) {   // (a new arena: copy what the last one holds)
                     texture_resident_flush(&tex);
                     checkpoint_mark(upload_cmd(), tex.gpu, 'u');
@@ -3235,7 +3266,12 @@ void vw_forget(const Texture& t) {   // (the entry goes; other listed textures a
 VkCommandPool rb_pool = VK_NULL_HANDLE;
 VkCommandBuffer rb_cmd = VK_NULL_HANDLE;
 VkFence rb_fence = VK_NULL_HANDLE;
+bool rb_pending = false;   // (a submission whose wait timed out: the GPU may still have its command buffer and fence)
 bool readback_begin() {
+    if (rb_pending) {   // (not reset, nor begun again, while pending: waited for first, or this read-back is not made)
+        if (vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) return false;
+        rb_pending = false;
+    }
     if (!rb_pool) {
         VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         pi.queueFamilyIndex = dev.queue_family;
@@ -3247,8 +3283,12 @@ bool readback_begin() {
         ai.commandBufferCount = 1;
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         if (vkAllocateCommandBuffers(dev.device, &ai, &rb_cmd) != VK_SUCCESS ||
-            vkCreateFence(dev.device, &fi, nullptr, &rb_fence) != VK_SUCCESS)
+            vkCreateFence(dev.device, &fi, nullptr, &rb_fence) != VK_SUCCESS) {
+            // (made again next time, not used half made: a null rb_cmd or rb_fence with rb_pool set)
+            vkDestroyCommandPool(dev.device, rb_pool, nullptr);
+            rb_pool = VK_NULL_HANDLE, rb_cmd = VK_NULL_HANDLE, rb_fence = VK_NULL_HANDLE;
             return false;
+        }
     }
     vkResetCommandPool(dev.device, rb_pool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -3290,7 +3330,8 @@ bool readback_submit_wait() {
         queue_flush_locked();
         if (vkQueueSubmit2(dev.queue, 1, &si, rb_fence) != VK_SUCCESS) return false;
     }
-    return vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+    rb_pending = vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS;
+    return !rb_pending;
 }
 /// A texture's write-back: its image's levels and layers read back, swizzled as the storage lays them out, and written into
 /// its memory within [clip_lo, clip_hi). The GPU half (flush_record) goes into rb_cmd, the CPU half (flush_finish) runs once
@@ -3772,6 +3813,18 @@ void texture_written(Texture* tex, const char* why) {
     }
     watch_tex(tex, "written");
     if (!tex->gpu_written || tex->released) tex->first_written = frame_no, drawn_writeback_note(tex);
+    // (hookshot) A texture in a virtual pool that the GPU writes first is marked uploaded below without the first upload,
+    // which notes its pages' mapping (texture_touch): its first check after the game finalized it took all of its storage
+    // for remapped, and the whole image was uploaded from guest memory over the GPU's texels (OoT's HUD button labels blank
+    // after a zone change). Noted here instead, by the writers that give a reason: each holds the ParLock a change to the
+    // map needs, or is the dry pass (tests/test_drawn_page_map.py lists them). The upscaler's stand-ins give none and run
+    // without that lock. A texture clear gives none: resolve() samples its texture first, which notes the map, unless
+    // only writers that give none wrote it before (then as before). RX_VK_NO_DRAWN_PAGE_MAP=1: as before
+    static const bool note_map = !env_on("RX_VK_NO_DRAWN_PAGE_MAP");
+    if (why && strcmp(why, "?") != 0 && note_map && tex->gpu >= (1ull << 40) && tex->page_map.empty() && tex->guest_size) {
+        static thread_local Ranges mapped;
+        texture_dirty(*tex, 0, mapped);
+    }
     tex->last_written = frame_no;
     tex->gpu_written = true;
     tex->gpu_gen = memory_generation();
@@ -3890,6 +3943,12 @@ VkDeviceSize sparse_added = 0;
 bool sparse_take(Texture* tex, VkDeviceSize n, VkDeviceMemory& mem, VkDeviceSize& off) {
     constexpr VkDeviceSize kChunk = 64ull << 20;
     n = (n + tex->sparse_align - 1) / tex->sparse_align * tex->sparse_align;
+    for (size_t i = 0; i < tex->sparse_free.size(); i++) {   // (a failed bind's memory first: a bind that keeps failing takes no more)
+        if (tex->sparse_free[i].size < n) continue;
+        mem = tex->sparse_free[i].memory, off = tex->sparse_free[i].offset;
+        tex->sparse_free.erase(tex->sparse_free.begin() + (std::ptrdiff_t)i);
+        return true;
+    }
     if (tex->sparse_chunks.empty() || tex->chunk_used + n > kChunk) {
         VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         ai.allocationSize = std::max(kChunk, n);
@@ -3911,6 +3970,33 @@ bool sparse_take(Texture* tex, VkDeviceSize n, VkDeviceMemory& mem, VkDeviceSize
     return true;
 }
 
+/// The queued binds that were not made: their blocks and mip tails marked unbound again, so the next write to them
+/// queues them anew rather than writing into unbacked memory (their memory goes to the texture's free list, for the retry)
+void sparse_unqueue(Texture* tex) {
+    const VkSparseImageMemoryRequirements& r = tex->sparse_req;
+    const VkExtent3D g = r.formatProperties.imageGranularity;
+    for (const VkSparseImageMemoryBind& b : sparse_binds) {
+        const uint32_t level = b.subresource.mipLevel, layer = b.subresource.arrayLayer;
+        if (level >= tex->levels || layer >= tex->layers || !g.width || !g.height) continue;
+        std::vector<uint8_t>& map = tex->tiles[(size_t)layer * tex->levels + level];
+        const uint32_t lw = std::max(1u, tex->width >> level);
+        const size_t i = (size_t)(b.offset.y / g.height) * ((lw + g.width - 1) / g.width) + b.offset.x / g.width;
+        if (i < map.size()) map[i] = 0;
+        tex->sparse_free.push_back({b.memory, b.memoryOffset, tex->sparse_align});
+    }
+    const bool single = r.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT;
+    for (const VkSparseMemoryBind& b : sparse_opaque) {
+        const VkDeviceSize layer = single || !r.imageMipTailStride ? 0 : (b.resourceOffset - r.imageMipTailOffset) / r.imageMipTailStride;
+        if (layer < tex->tail_bound.size()) tex->tail_bound[layer] = 0;
+        const VkDeviceSize a = tex->sparse_align ? tex->sparse_align : 1;
+        tex->sparse_free.push_back({b.memory, b.memoryOffset, (b.size + a - 1) / a * a});
+    }
+    total_bytes += sparse_added;
+    sparse_added = 0;
+    sparse_binds.clear();
+    sparse_opaque.clear();
+}
+
 bool sparse_flush(Texture* tex) {
     if (sparse_binds.empty() && sparse_opaque.empty()) return true;
     VkSparseImageMemoryBindInfo ib{tex->image, (uint32_t)sparse_binds.size(), sparse_binds.data()};
@@ -3923,7 +4009,13 @@ bool sparse_flush(Texture* tex) {
     static VkFence fence = VK_NULL_HANDLE;
     if (!fence) {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        vkCreateFence(dev.device, &fi, nullptr, &fence);
+        if (vkCreateFence(dev.device, &fi, nullptr, &fence) != VK_SUCCESS) {   // (never a bind waited on through a null fence)
+            fence = VK_NULL_HANDLE;
+            static int logged;   // (retried on the next write: capped like the other sparse messages)
+            if (logged++ < 8) logf("vk: sparse texture %#llx: no fence for its binds", (unsigned long long)tex->gpu);
+            sparse_unqueue(tex);
+            return false;
+        }
     }
     VkResult res;
     {   // (bound before any work that writes the blocks is submitted: waited for here, on the recording thread. And
@@ -3943,7 +4035,10 @@ bool sparse_flush(Texture* tex) {
         vkWaitForFences(dev.device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkResetFences(dev.device, 1, &fence);
     } else {
-        logf("vk: sparse texture %#llx: binding failed (%d)", (unsigned long long)tex->gpu, (int)res);
+        static int failed;   // (retried on the next write: capped like the other sparse messages)
+        if (failed++ < 8) logf("vk: sparse texture %#llx: binding failed (%d)", (unsigned long long)tex->gpu, (int)res);
+        sparse_unqueue(tex);
+        return false;
     }
     static int logged;
     static uint64_t next_mb = 0;
@@ -4087,6 +4182,14 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     const int nf = view_nvn_format(t, v);
     VkFormat f = vk_format(nf).format;
     if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
+    {   // (a format the device has no texel buffers of, e.g. some 3-component ones: no view rather than an invalid one)
+        if (!(format_props(f).bufferFeatures & (storage ? VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT : VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT))) {
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
+                logf("vk: texel buffer of format %d (%s) not supported by the device: unbound", (int)f, storage ? "storage" : "uniform");
+            return VK_NULL_HANDLE;
+        }
+    }
     int bw = 1, bh = 1;
     const int bpb = nvn_block_size(nf, &bw, &bh);
     if (bpb <= 0) return VK_NULL_HANDLE;
@@ -4603,8 +4706,8 @@ void texture_frame(uint64_t completed) {
             }
         }
     }
-    // (hookshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache: vram_compact.h.
-    // RX_VK_EVICT_EXCESS=0: to 7/8 of their budget, as before
+    // (hookshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache, while that excess is
+    // small (a large one is cut to 7/8 as before): vram_compact.h. RX_VK_EVICT_EXCESS=0: always to 7/8 of their budget, as before
     static const bool excess_only = !getenv("RX_VK_EVICT_EXCESS") || atoi(getenv("RX_VK_EVICT_EXCESS")) != 0;
     const uint64_t rule_to = excess_only ? vram_compact::rule_target(total_bytes, size_budget, rule_budget)
                                          : vram_compact::rule_target(total_bytes, rule_budget);

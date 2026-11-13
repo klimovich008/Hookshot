@@ -51,7 +51,7 @@ def main():
     cases = ["healthy", "remap", "offset", "format", "range", "liveness", "late-map",
              "host-oom", "device-oom", "other-error", "registry-commit", "view-commit",
              "cached-after-failure", "independent", "retirement", "eviction", "reuse-handle",
-             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "concurrent"]
+             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "unsupported", "concurrent"]
     with tempfile.TemporaryDirectory(prefix="texel-buffer-ownership-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

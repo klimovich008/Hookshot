@@ -140,6 +140,17 @@ int auto_cap() {
 int multiplier() {   // (the Insert menu; 1 Auto (its most); the game's frames alone at 0)
     return opts.framegen == 1 ? auto_cap() : std::clamp(opts.framegen, 1, kMaxMult);
 }
+// (hookshot) A fixed multiplier makes as many frames a game frame as the display can show, m at most, so the game keeps its
+// own rate. Each made frame is a full-size pass on the game's queue and a present of its own, and a frame past the display's
+// refresh never reaches the screen: 8x at 60 fps on a 180 Hz display made 7 frames a game frame for 3 refreshes, the display
+// thread got ~220 presents a second out, the game waited on its sets and fell from 60 to ~28 fps (3440x1440, 2026-11-11).
+// Now: the display's refreshes in the game's frame time (60 fps on 180 Hz: 3, two of them made), 1 (the game's frame alone)
+// at the refresh. An unknown refresh or frame time: m. RX_VK_FRAMEGEN_UNCAPPED=1: m always. (tests/test_framegen_auto.py)
+int fixed_frames(int m, int hz, int64_t game_ns) {
+    if (m <= 1 || hz <= 0 || game_ns <= 0) return std::max(m, 1);
+    const int fit = (int)((double)hz * (double)game_ns / 1e9 + 0.2);   // (+0.2: a game a little over 60 fps on 180 Hz keeps its 3)
+    return std::clamp(fit, 1, m);
+}
 /// Auto: the display's refreshes in the game frame's interval (last, now], next the first not given a frame yet (moved
 /// past them). Each one's place between the two game frames in t (1: this one) and its time in at; most of them at the
 /// most, those past it skipped. A timeline outside the interval (the first frame, a hitch) starts again at now.
@@ -447,8 +458,9 @@ void display_main() {
         last_at = j.at;
         if (!stat.since) stat.since = j.at;
         if (j.at - stat.since > 5000000000LL) {
-            logf("vk: frame interpolation: %d frames shown on time, %d late (over 2 ms); shown apart: <7 ms %d, 7-9 %d, 9-12 %d, "
-                 "12-17 %d, 17-25 %d, over 25 %d", stat.on_time, stat.late, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
+            logf("vk: frame interpolation: %d frames shown on time, %d late (over 2 ms), %d made ones left out (the game's next "
+                 "frame waiting); shown apart: <7 ms %d, 7-9 %d, 9-12 %d, 12-17 %d, 17-25 %d, over 25 %d", stat.on_time, stat.late,
+                 stat.skipped, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
             memset(hist, 0, sizeof hist);
             stat = {0, 0, 0, j.at};
         }
@@ -483,6 +495,20 @@ void display_main() {
             if (pending[0].used) vkWaitForFences(dev.device, 1, &pending[0].done, VK_TRUE, 100000000ull);   // (100 ms at most)
         }
         for (int k = 0; k < shown; k++) {
+            // (hookshot) A made frame is left out when the game's next frame is already waiting: the display thread behind
+            // the game held its sets, and the game waited for them (the game's rate fell, frame generation on). The set's
+            // game frame is always shown. Not with present ahead: its copies are already on their way
+            if (!ahead && (timed ? !j.set->game[k] : k < j.set->made)) {
+                bool newer;
+                {
+                    std::lock_guard lk(fg.mu);
+                    newer = !fg.jobs.empty();
+                }
+                if (newer) {
+                    stat.skipped++;
+                    continue;
+                }
+            }
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
             const int64_t now = now_ns();
             if (due < now) due = now;
@@ -911,19 +937,35 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     FgMaker maker = set->made ? FgMaker::Dlss : FgMaker::None;
     // (hookshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
     // above) stay with the interpolation below, as does any present it does not take
-    if (set->made == 0 && blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
+    // (hookshot) the frames this game frame gets: as many as the display shows (fixed_frames), DLSS's own above excepted
+    static const bool uncapped = getenv("RX_VK_FRAMEGEN_UNCAPPED") && atoi(getenv("RX_VK_FRAMEGEN_UNCAPPED")) != 0;
+    const int mk = uncapped ? m : fixed_frames(m, (display_refresh_mhz() + 500) / 1000, fg.game_ns);
+    {
+        static int said = -1;
+        static int64_t said_at = 0;
+        if (mk != said && (said < 0 || now - said_at > 5000000000LL)) {
+            if (mk < m)
+                logf("vk: frame interpolation: %dx asked, %dx made: the display's %d Hz over the game's %.0f fps (the game keeps its "
+                     "rate; RX_VK_FRAMEGEN_UNCAPPED=1: all)", m, mk, (display_refresh_mhz() + 500) / 1000,
+                     fg.game_ns > 0 ? 1e9 / (double)fg.game_ns : 0.0);
+            else if (said >= 0)
+                logf("vk: frame interpolation: %dx made", mk);
+            said = mk, said_at = now;
+        }
+    }
+    if (set->made == 0 && blend && mk == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
     if (maker == FgMaker::None && set->made) maker = FgMaker::Fsr3;
-    if (set->made == 0 && blend && m > 1) {
+    if (set->made == 0 && blend && mk > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
         pass(cmd, fg.median, {{fg.flows[0].view, fg.nearest}, {fg.flows[1].view, VK_NULL_HANDLE}}, cw, ch);
-        for (int k = 1; k < m; k++) {
-            const float t = (float)k / (float)m;
+        for (int k = 1; k < mk; k++) {
+            const float t = (float)k / (float)mk;
             pass(cmd, fg.synth, {{fg.frames[prev].view, fg.linear}, {fg.frames[cur].view, fg.linear},
                                  {fg.flows[1].view, fg.nearest}, {set->frame[k - 1].view, VK_NULL_HANDLE}},
                  uw, uh, &t, 4);
         }
-        set->made = m - 1;
+        set->made = mk - 1;
         maker = FgMaker::BuiltIn;
     }
     note_maker(maker);

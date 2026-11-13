@@ -578,6 +578,9 @@ Shader::Profile make_profile() {
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
     p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
+    // (8/16-bit global stores written as bytes/halves through narrow views, RX_VK_NATIVE_NARROW=0: the compare-exchange loop on the
+    // word as before; an RX_VK_NATIVE* switch, so the program cache stamp follows it)
+    p.support_native_narrow_global_store = !(getenv("RX_VK_NATIVE_NARROW") && atoi(getenv("RX_VK_NATIVE_NARROW")) == 0);
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
