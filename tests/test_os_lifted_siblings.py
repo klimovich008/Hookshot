@@ -26,7 +26,8 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
-PARTS = {"@HANDOFF@": "static int handoff_on(void) {", "@ENTER@": "static void cv_enter(Obj *cv, Obj *m) {",
+PARTS = {"@HANDOFF@": "static int handoff_on(void) {", "@COUNT@": "static void cv_count_in(Obj *cv) {",
+         "@ENTER@": "static void cv_enter(Obj *cv, Obj *m) {",
          "@LEAVE@": "static int cv_leave(Obj *cv, Obj *m) {", "@RESERVE@": "static void cv_reserve(Obj *cv) {",
          "@BROADCAST@": "HLE(_ZN2nn2os26BroadcastConditionVariableEPNS0_21ConditionVariableTypeE) {",
          "@SEMA@": "static int sema_acquire_for(Obj *s, int64_t ns) {"}
@@ -69,7 +70,7 @@ typedef struct Obj {
     uint64_t gen;
     int sem;
     int reserved;
-    int cv_waiting, cv_owed, cv_mixed;
+    int cv_waiting, cv_in, cv_owed, cv_mixed;   // (cv_in: #2708, the waiters inside under cv->lk)
     struct Obj *cv_mutex, *cv_owed_mutex[8];
 } Obj;
 static Obj cvo, so, mo, mo2;
@@ -100,7 +101,10 @@ static int wait_until(Obj *o, int64_t deadline) {   /* (host/nn_os_sync.c's: 0 o
 }
 
 @HANDOFF@
+@COUNT@
 @ENTER@
+/* a waiter as the wait HLEs bring one in: counted (cv_count_in, before cv->lk), then in (cv_enter) */
+static void waiter_in(Obj *cv, Obj *m) { cv_count_in(cv); cv_enter(cv, m); }
 @LEAVE@
 @RESERVE@
 @BROADCAST@
@@ -138,26 +142,26 @@ int main(int argc, char **argv) {
     broadcast();
     CHECK(mo.reserved == 0);
     /* three waiters on one mutex: all wake and all are owed it */
-    for (int i = 0; i < 3; i++) cv_enter(&cvo, &mo);
+    for (int i = 0; i < 3; i++) waiter_in(&cvo, &mo);
     broadcast();
     CHECK(mo.reserved == (handoff ? 3 : 0));
     CHECK(leave_all(&mo) == (handoff ? 3 : 0));
     /* one owed by an earlier signal, two more in: the broadcast owes only the two */
-    cv_enter(&cvo, &mo);
+    waiter_in(&cvo, &mo);
     if (handoff) cv_reserve(&cvo);
-    cv_enter(&cvo, &mo);
-    cv_enter(&cvo, &mo);
+    waiter_in(&cvo, &mo);
+    waiter_in(&cvo, &mo);
     broadcast();
     CHECK(mo.reserved == (handoff ? 3 : 0));
     CHECK(leave_all(&mo) == (handoff ? 3 : 0));
     /* ten waiters: at most 8 owed (cv_reserve's limit), the others lock as anyone does */
-    for (int i = 0; i < 10; i++) cv_enter(&cvo, &mo);
+    for (int i = 0; i < 10; i++) waiter_in(&cvo, &mo);
     broadcast();
     CHECK(mo.reserved == (handoff ? 8 : 0));
     CHECK(leave_all(&mo) == (handoff ? 8 : 0));
     /* waiters with different mutexes: no hand-off */
-    cv_enter(&cvo, &mo);
-    cv_enter(&cvo, &mo2);
+    waiter_in(&cvo, &mo);
+    waiter_in(&cvo, &mo2);
     broadcast();
     CHECK(mo.reserved == 0 && mo2.reserved == 0);
     cv_leave(&cvo, &mo), cv_leave(&cvo, &mo2);
